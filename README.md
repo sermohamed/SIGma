@@ -1,1 +1,1 @@
-# SIGma
+# SIGmap
