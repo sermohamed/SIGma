@@ -368,13 +368,26 @@
     html, body { overflow: hidden; }
     #webapp-root { display: flex; flex-direction: row; height: 100vh; width: 100vw; overflow: hidden; }
     #sidebar {
-      width: 310px; min-width: 260px; max-width: 400px;
+      width: 310px; min-width: 240px; max-width: 480px;
       height: 100vh; flex-shrink: 0;
       background: #2c3e50; color: white;
       font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px;
       display: flex; flex-direction: column;
       border-right: 2px solid #1a252f;
       box-sizing: border-box; overflow: hidden;
+      transition: width 0.25s ease, min-width 0.25s ease;
+      position: relative;
+    }
+    /* Drag handle on right edge of sidebar */
+    #sidebar-resize-handle {
+      position: absolute; top: 0; right: 0; width: 5px; height: 100%;
+      cursor: col-resize; background: transparent; z-index: 10;
+      transition: background 0.2s;
+    }
+    #sidebar-resize-handle:hover { background: rgba(52,152,219,0.4); }
+    #sidebar-resize-handle::after {
+      content: '⋮'; position: absolute; top: 50%; left: -4px;
+      transform: translateY(-50%); color: #4a6278; font-size: 16px; pointer-events: none;
     }
     #sidebar-tabs { display: flex; background: #243342; flex-shrink: 0; }
     .s-tab {
@@ -430,14 +443,92 @@
     }
     #map-wrap { flex: 1; position: relative; overflow: hidden; height: 100vh; }
     #map { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+    /* ── Sidebar hide/show toggle button ── */
+    #sidebar-toggle {
+      position: absolute; top: 50%; left: 0;
+      transform: translateY(-50%);
+      z-index: 1100; background: #2980b9;
+      color: white; border: none; border-radius: 0 8px 8px 0;
+      padding: 14px 6px; cursor: pointer; font-size: 14px;
+      box-shadow: 2px 0 8px rgba(0,0,0,0.4);
+      transition: left 0.25s, background 0.15s;
+      line-height: 1;
+    }
+    #sidebar-toggle:hover { background: #3498db; }
+    /* Drag handle on right edge of sidebar */
+    #sidebar-resize-handle {
+      position: absolute; top: 0; right: 0; width: 6px; height: 100%;
+      cursor: col-resize; z-index: 11;
+      background: linear-gradient(to right, transparent, rgba(52,152,219,0.25));
+      transition: background 0.2s;
+    }
+    #sidebar-resize-handle:hover,
+    #sidebar-resize-handle.dragging { background: linear-gradient(to right, transparent, rgba(52,152,219,0.6)); }
+    #sidebar.collapsed { width: 0 !important; min-width: 0 !important; overflow: hidden; border: none; }
+
+    /* ── Mobile responsive — same layout as desktop but scaled ── */
+    @media (max-width: 768px) {
+      #webapp-root { flex-direction: row; overflow-x: auto; min-width: 700px; }
+      html, body { overflow-x: auto; min-width: 700px; }
+      #sidebar { width: 280px !important; min-width: 240px !important; flex-shrink: 0; }
+      #map-wrap { flex: 1; min-width: 320px; }
+      /* Slightly smaller controls on mobile */
+      .ctrl-btn { width: 26px; height: 26px; line-height: 26px; font-size: 14px; }
+      .leaflet-control a { width: 26px !important; height: 26px !important; }
+      /* Sidebar toggle still visible and functional */
+      #sidebar-toggle { display: flex !important; }
+      /* Mobile menu button hidden — sidebar always visible */
+      #mobile-menu-btn { display: none !important; }
+      #mobile-overlay  { display: none !important; }
+    }
+    @media (min-width: 769px) {
+      #mobile-menu-btn { display: none !important; }
+      #mobile-overlay  { display: none !important; }
+    }
+    /* ── Metric converter module ── */
+    .mc-section { border-top: 1px solid #2c3e50; margin-top: 6px; overflow: hidden; }
+    .mc-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 7px 0 6px; cursor: pointer; user-select: none;
+      font-size: 12px; font-weight: 700; color: #ecf0f1;
+    }
+    .mc-header:hover { color: #3498db; }
+    .mc-arrow { transition: transform .25s; display: inline-block; font-size: 10px; color: #7f8c8d; }
+    .mc-body {
+      max-height: 0; overflow: hidden;
+      transition: max-height .3s ease;
+    }
+    .mc-body.open { max-height: 600px; }
+    .mc-type-sel { width: 100%; margin-bottom: 6px; }
+    .mc-row { display: flex; gap: 5px; align-items: center; margin: 4px 0; }
+    .mc-row input  { flex: 1; min-width: 0; }
+    .mc-row select { flex: 1; min-width: 0; font-size: 11px; }
+    .mc-eq { font-size: 13px; color: #7f8c8d; flex-shrink: 0; }
+    /* ── Map tools style panel ── */
+    #map-tools-panel { font-size: 12px; }
+    .style-section { border-top: 1px solid #ddd; margin-top: 8px; padding-top: 8px; }
+    .style-section-title { font-size: 11px; font-weight: 700; color: #555; margin-bottom: 5px; }
+    .style-row { display: flex; align-items: center; gap: 6px; margin: 4px 0; font-size: 11px; color: #333; }
+    .style-row label { min-width: 80px; flex-shrink: 0; }
+    .style-row input[type=color] { width: 28px; height: 22px; padding: 1px; border: 1px solid #bbb; border-radius: 3px; cursor: pointer; }
+    .style-row input[type=range] { flex: 1; }
+    .style-row input[type=number]{ width: 44px; padding: 2px 4px; border: 1px solid #bbb; border-radius: 3px; font-size: 11px; }
+    /* ── Ruler tooltip ── */
+    .ruler-tooltip { background: rgba(30,45,61,0.9); color: #ecf0f1; padding: 4px 8px; border-radius: 5px; font-size: 12px; font-family:'Segoe UI',Arial,sans-serif; white-space: nowrap; border: 1px solid #2980b9; }
     /* ════════════════════════════════════════════════ */
   </style>
 </head>
 <body>
-<div id="webapp-root">
+<!-- Mobile menu button (only visible on small screens) -->
+<button id="mobile-menu-btn" onclick="toggleMobileSidebar()" style="display:none">☰</button>
+<!-- Mobile overlay -->
+<div id="mobile-overlay" onclick="toggleMobileSidebar()"></div>
 
+<div id="webapp-root">
   <!-- ══════════════════════ SIDEBAR ══════════════════════ -->
   <div id="sidebar">
+    <div id="sidebar-resize-handle" title="Glissez pour redimensionner le panneau"></div>
     <div id="sidebar-tabs">
       <button class="s-tab active" onclick="sbTab('conv')">🗺 Convertisseur</button>
       <button class="s-tab" onclick="sbTab('print')">🖨 Impression</button>
@@ -482,6 +573,45 @@
             <span style="color:#7f8c8d">Aucune conversion encore.</span>
           </div>
         </div>
+
+        <!-- ═══ CONVERTISSEURS MÉTRIQUES ═══ -->
+        <div class="sg" style="margin-top:10px">
+          <div class="sg-h" onclick="mcToggleAll()" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;user-select:none">
+            📐 Convertisseurs métriques
+            <span id="mc-all-arrow" class="mc-arrow" style="transform:rotate(-90deg)">▼</span>
+          </div>
+          <div id="mc-all-body" class="mc-body" style="padding:0 6px 8px">
+            <div style="margin-top:8px">
+              <select id="mc-cat" class="ss" onchange="mcCatChanged()" style="width:100%;margin-bottom:10px;font-size:13px;padding:6px 8px">
+                <option value="Longueur">📏 Longueur</option>
+                <option value="Surface">⬛ Surface</option>
+                <option value="Volume">📦 Volume</option>
+                <option value="Masse">⚖️ Masse</option>
+                <option value="Pression">💨 Pression</option>
+                <option value="Angle">📐 Angle</option>
+                <option value="Température">🌡 Température</option>
+              </select>
+              <div style="display:flex;gap:6px;align-items:center;margin-bottom:6px">
+                <div style="flex:1;background:#1e2d3d;border:1px solid #3d5166;border-radius:6px;padding:4px 8px">
+                  <input type="number" id="mc-val-in" step="any" placeholder="1" oninput="mcConvertNew()"
+                    style="width:100%;background:none;border:none;color:#ecf0f1;font-size:18px;font-weight:bold;outline:none;text-align:center;box-sizing:border-box">
+                  <select id="mc-unit-from" class="ss" onchange="mcConvertNew()" style="margin-top:4px;width:100%"></select>
+                </div>
+                <div style="font-size:18px;color:#7f8c8d;flex-shrink:0;padding:0 2px">=</div>
+                <div style="flex:1;background:#1a252f;border:1px solid #2c3e50;border-radius:6px;padding:4px 8px">
+                  <input type="number" id="mc-val-out" step="any" readonly
+                    style="width:100%;background:none;border:none;color:#2ecc71;font-size:18px;font-weight:bold;outline:none;text-align:center;box-sizing:border-box">
+                  <select id="mc-unit-to" class="ss" onchange="mcConvertNew()" style="margin-top:4px;width:100%"></select>
+                </div>
+              </div>
+              <div id="mc-formula-wrap" style="margin-top:4px;font-size:11px;color:#bdc3c7;background:#1e2d3d;border-radius:4px;padding:5px 8px;display:none;align-items:center;gap:6px">
+                <span style="background:#f39c12;color:#000;border-radius:3px;padding:1px 5px;font-weight:bold;font-size:10px;flex-shrink:0">Formule</span>
+                <span id="mc-formula"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
       </div>
 
       <!-- TAB: IMPRESSION -->
@@ -567,6 +697,8 @@
 
   <!-- ══════════════════════ MAP ══════════════════════ -->
   <div id="map-wrap">
+    <!-- Sidebar toggle button -->
+    <button id="sidebar-toggle" onclick="toggleDesktopSidebar()" title="Afficher/Masquer le panneau">◀</button>
     <div id="map"></div>
   <div id="elevation-container">
     <canvas id="elevation-chart"></canvas>
@@ -841,54 +973,40 @@
 
     // Initialize map
     const map = L.map('map', {
-      doubleClickZoom: false
+      doubleClickZoom: false, maxZoom: 21
     }).setView([31.629713, -8.013690], 13);
     
     console.log("Map initialized at:", map.getCenter(), "Zoom:", map.getZoom());
 
     // Layer definitions
+    // ── Base tile layers ──────────────────────────────────────────────────────
     const osm = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 19, attribution: '&copy; OpenStreetMap contributors'
-    });
-    const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 19, attribution: '&copy; Esri, Maxar, GeoEye, Earthstar Geographics'
-    });
-    const hybrid = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 19, attribution: '&copy; Esri'
-    });
-    const hybridLabels = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
-      maxZoom: 19, attribution: '&copy; Esri'
+      maxZoom: 21, maxNativeZoom: 19,
+      attribution: '&copy; OpenStreetMap contributors'
     });
 
-    // Offline satellite — probe server first, auto-fallback to online satellite on error
-    const offlineSatellite = L.tileLayer('http://localhost:5000/tiles/{z}/{x}/{y}.png', {
-      maxZoom: 16, minZoom: 9,
-      attribution: '© SAS.Planet / Google Satellite',
-      errorTileUrl: 'data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7'
+    // Esri Satellite — maxNativeZoom 19 prevents "data not yet available" at deep zoom
+    const satellite = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 21, maxNativeZoom: 19,
+      attribution: '&copy; Esri, Maxar, GeoEye, Earthstar Geographics'
     });
-    let _offlineServerDead = false;
-    let _offlineFallbackShown = false;
-    offlineSatellite.on('tileerror', function() {
-      if (_offlineServerDead) return;
-      _offlineServerDead = true;
-      if (!_offlineFallbackShown) {
-        _offlineFallbackShown = true;
-        // Auto-switch to online satellite
-        if (map.hasLayer(offlineSatellite)) {
-          map.removeLayer(offlineSatellite);
-          satellite.addTo(map);
-          console.warn('Serveur offline introuvable — basculement vers satellite en ligne.');
-        }
-      }
+    satellite.on('tileerror', function() {
+      // Silently suppress — maxNativeZoom tile stretching handles deep zoom gracefully
+    });
+
+    const hybrid = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 21, maxNativeZoom: 19, attribution: '&copy; Esri'
+    });
+    const hybridLabels = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}', {
+      maxZoom: 21, maxNativeZoom: 19, attribution: '&copy; Esri'
     });
 
     const hybridGroup = L.layerGroup([hybrid, hybridLabels]);
     hybridGroup.addTo(map);
     const baseLayers = {
-      "Plan (Online)": osm,
-      "Satellite (Hors-ligne)": offlineSatellite,
-      "Satellite (Online)": satellite,
-      "Hybride (Online)": hybridGroup
+      "Plan (OpenStreetMap)": osm,
+      "Satellite (Online)":   satellite,
+      "Hybride (Online)":     hybridGroup
     };
     L.control.layers(baseLayers, null, { position: 'topright' }).addTo(map);
 
@@ -1004,25 +1122,34 @@
     }
     
     function recreateLabel(layer) {
-      if (!layer.customName) return;
+      if (!layer || !layer.customName) return;
       // Remove existing label first
-      if (layer.label) { labels.removeLayer(layer.label); layer.label = null; }
+      if (layer.label) { try { labels.removeLayer(layer.label); } catch(e){} layer.label = null; }
 
       let labelPos, segmentAngle = 0;
 
-      if (layer instanceof L.Marker) {
-        const c = layer.getLatLng();
-        labelPos = L.latLng(c.lat + 0.00015, c.lng);
-      } else if (layer instanceof L.Polyline && !(layer instanceof L.Polygon)) {
-        const coords = layer.getLatLngs();
-        if (!coords || coords.length < 2) return;
-        const si = Math.floor((coords.length - 1) / 2);
-        const start = coords[si], end = coords[si + 1];
-        labelPos = L.latLng((start.lat + end.lat) / 2 + 0.0001, (start.lng + end.lng) / 2);
-        segmentAngle = calculateSegmentAngle(start, end);
-      } else {
-        labelPos = layer.getBounds().getCenter();
-      }
+      try {
+        if (layer instanceof L.Marker) {
+          const c = layer.getLatLng();
+          if (!c) return;
+          labelPos = L.latLng(c.lat + 0.00015, c.lng);
+        } else if (layer instanceof L.Polyline && !(layer instanceof L.Polygon)) {
+          const coords = layer.getLatLngs();
+          if (!coords || coords.length < 2) return;
+          // Flatten one level if needed
+          const flat = (coords[0] && !('lat' in coords[0])) ? coords[0] : coords;
+          if (flat.length < 2) return;
+          const si = Math.floor((flat.length - 1) / 2);
+          const start = flat[si], end = flat[si + 1];
+          if (!start || !end) return;
+          labelPos = L.latLng((start.lat + end.lat) / 2 + 0.0001, (start.lng + end.lng) / 2);
+          segmentAngle = calculateSegmentAngle(start, end);
+        } else if (layer.getBounds) {
+          const b = layer.getBounds();
+          if (!b || !b.isValid()) return;
+          labelPos = b.getCenter();
+        } else { return; }
+      } catch(e) { return; }
 
       // Apply stored label style — defaults match the original CSS class (.measurement-label)
       const ls = layer._labelStyle || {};
@@ -1418,93 +1545,68 @@
       }
     });
 
-    // Elevation toggle button (Profil altimétrique)
+    // ── Declare all Leaflet controls BEFORE any addControl call ──────────────
+
+    // Undo/Redo + Delete merged into one bar
+    const UndoRedoControl = L.Control.extend({
+      options: { position: 'topleft' },
+      onAdd: function () {
+        const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+        const undoBtn = L.DomUtil.create('a', 'ctrl-btn', container);
+        undoBtn.href='#'; undoBtn.title='Annuler (Ctrl+Z)'; undoBtn.innerHTML='↶';
+        const redoBtn = L.DomUtil.create('a', 'ctrl-btn', container);
+        redoBtn.href='#'; redoBtn.title='Refaire (Ctrl+Y)'; redoBtn.innerHTML='↷';
+        const delBtn = L.DomUtil.create('a', 'ctrl-btn', container);
+        delBtn.href='#'; delBtn.id='delete-tool-btn';
+        delBtn.title='Supprimer un objet — activez puis cliquez sur l\'objet (Échap pour annuler)';
+        delBtn.innerHTML='🗑';
+        L.DomEvent.disableClickPropagation(container);
+        L.DomEvent.on(undoBtn,'click',function(e){L.DomEvent.preventDefault(e);undo();});
+        L.DomEvent.on(redoBtn,'click',function(e){L.DomEvent.preventDefault(e);redo();});
+        L.DomEvent.on(delBtn, 'click',function(e){L.DomEvent.preventDefault(e);_deleteMode?_deactivateDeleteMode():_activateDeleteMode(delBtn);});
+        return container;
+      }
+    });
+
+    // Delete Control kept as separate class for _activateDeleteMode ref
+    let _deleteMode = false;
+    let _deleteLayerSelected = null, _deleteHighlight = null, _deleteConfirmBar = null;
+    // (DeleteControl functionality now baked into UndoRedoControl delete btn above)
+    // Dummy class so existing code referencing DeleteControl doesn't break
+    const DeleteControl = L.Control.extend({ options:{position:'topleft'}, onAdd:function(){return L.DomUtil.create('div');} });
+
+    // Elevation (moved to AdvTools group — not added as standalone control)
     const ElevationToggleControl = L.Control.extend({
       options: { position: 'topleft' },
       onAdd: function () {
         const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
         const btn = L.DomUtil.create('a', 'ctrl-btn', container);
-        btn.href = '#';
-        btn.title = 'Profil altimétrique — sélectionnez une polyligne';
-        btn.innerHTML = '📈';
+        btn.href='#'; btn.id='elev-btn';
+        btn.title='Profil altimétrique — sélectionnez une polyligne';
+        btn.innerHTML='📈';
         L.DomEvent.disableClickPropagation(container);
-        L.DomEvent.on(btn, 'click', function (e) {
+        L.DomEvent.on(btn,'click',function(e){
           L.DomEvent.preventDefault(e);
-          isElevationActive = !isElevationActive;
-          btn.classList.toggle('active', isElevationActive);
-          if (isElevationActive) {
-            // Restore last used polyline if available
-            if (_lastElevLayer && drawnItems.hasLayer(_lastElevLayer)) {
-              selectedPolyline = null; // force re-draw
-              updateElevationChart(_lastElevLayer);
-            } else if (selectedPolyline) {
-              updateElevationChart(selectedPolyline);
-            }
-          } else {
-            if (elevationChart) { elevationChart.destroy(); elevationChart = null; }
+          isElevationActive=!isElevationActive;
+          btn.classList.toggle('active',isElevationActive);
+          if(isElevationActive){
+            if(_lastElevLayer&&drawnItems.hasLayer(_lastElevLayer)){selectedPolyline=null;updateElevationChart(_lastElevLayer);}
+            else if(selectedPolyline){updateElevationChart(selectedPolyline);}
+          }else{
+            if(elevationChart){elevationChart.destroy();elevationChart=null;}
             _cleanHoverMarker();
             document.getElementById('elevation-container').classList.remove('visible');
-            document.getElementById('map').style.height = '100%';
+            document.getElementById('map').style.height='100%';
             map.invalidateSize();
           }
         });
         return container;
       }
     });
-    map.addControl(new ElevationToggleControl());
-    
-    // Undo/Redo Control
-    const UndoRedoControl = L.Control.extend({
-      options: { position: 'topleft' },
-      onAdd: function () {
-        const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
-        
-        const undoBtn = L.DomUtil.create('a', 'ctrl-btn', container);
-        undoBtn.href = '#';
-        undoBtn.title = 'Annuler (Ctrl+Z)';
-        undoBtn.innerHTML = '↶';
-        
-        const redoBtn = L.DomUtil.create('a', 'ctrl-btn', container);
-        redoBtn.href = '#';
-        redoBtn.title = 'Refaire (Ctrl+Y)';
-        redoBtn.innerHTML = '↷';
-        
-        L.DomEvent.disableClickPropagation(container);
-        L.DomEvent.on(undoBtn, 'click', function(e) { L.DomEvent.preventDefault(e); undo(); });
-        L.DomEvent.on(redoBtn, 'click', function(e) { L.DomEvent.preventDefault(e); redo(); });
-        return container;
-      }
-    });
+
+    // ── ADD controls in order ─────────────────────────────────────────────────
     map.addControl(new UndoRedoControl());
-
-    // ─── Custom Delete Control (replaces Leaflet Draw's buggy delete mode) ────
-    let _deleteMode = false;
-    const DeleteControl = L.Control.extend({
-      options: { position: 'topleft' },
-      onAdd: function() {
-        const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
-        const btn = L.DomUtil.create('a', 'ctrl-btn', container);
-        btn.href='#'; btn.id='delete-tool-btn';
-        btn.title='Supprimer un objet — activez puis cliquez sur l\'objet (Échap pour annuler)';
-        btn.innerHTML = '🗑';
-        L.DomEvent.disableClickPropagation(container);
-        L.DomEvent.on(btn, 'click', function(e) {
-          L.DomEvent.preventDefault(e);
-          _deleteMode ? _deactivateDeleteMode() : _activateDeleteMode(btn);
-        });
-        return container;
-      }
-    });
-    map.addControl(new DeleteControl());
-
-    let _deleteLayerSelected = null;
-    let _deleteHighlight    = null;
-    let _deleteConfirmBar   = null;
-
-    // Escape key cancels delete mode
-    document.addEventListener('keydown', function(e) {
-      if (e.key === 'Escape' && _deleteMode) _deactivateDeleteMode();
-    });
+    // (Elevation + Delete already in UndoRedoControl bar and AdvToolsControl)
 
     function _activateDeleteMode(btn) {
       // Disable any other active draw/edit mode first
@@ -1701,13 +1803,13 @@
         selectedForOverlap.splice(idx, 1);
         _overlapOrigStyles.delete(layer);
       } else {
-        // Select — save original style
+        // Select — save original style with safe defaults
         _overlapOrigStyles.set(layer, {
-          color: layer.options.color,
-          weight: layer.options.weight,
-          fillColor: layer.options.fillColor,
-          fillOpacity: layer.options.fillOpacity,
-          opacity: layer.options.opacity
+          color:       layer.options.color       || '#3388ff',
+          weight:      layer.options.weight      || 3,
+          fillColor:   layer.options.fillColor   || layer.options.color || '#3388ff',
+          fillOpacity: layer.options.fillOpacity !== undefined ? layer.options.fillOpacity : 0.2,
+          opacity:     layer.options.opacity     !== undefined ? layer.options.opacity     : 1
         });
         layer.setStyle({ color: '#f39c12', weight: 3, fillColor: '#f39c12', fillOpacity: 0.35 });
         selectedForOverlap.push(layer);
@@ -1760,7 +1862,7 @@
         return container;
       }
     });
-    map.addControl(new OverlapControl());
+    // OverlapControl merged into AdvToolsControl above
 
 
     const searchPanelEl = document.createElement('div');
@@ -1781,9 +1883,44 @@
     toolsPanelEl.id = 'map-tools-panel';
     toolsPanelEl.style.cssText = 'display:none;position:absolute;top:50px;right:50px;z-index:1000;background:white;border:2px solid #888;border-radius:6px;padding:10px 12px;min-width:200px;box-shadow:0 3px 12px rgba(0,0,0,0.3);font-family:\'Segoe UI\',Arial,sans-serif;';
     toolsPanelEl.innerHTML = `
-      <div style="font-weight:bold;font-size:12px;color:#444;margin-bottom:7px;">🛠 Outils cartographiques</div>
-      <button class="map-tool-btn" id="fill-toggle-btn" onclick="toggleFillMode()">◻ Remplissage polygones : ON</button>
-      <button class="map-tool-btn" id="snap-toggle-btn" onclick="toggleSnapping()">🧲 Snapping : OFF</button>
+      <div style="font-weight:bold;font-size:12px;color:#444;margin-bottom:7px;display:flex;justify-content:space-between;align-items:center">
+        🛠 Outils cartographiques
+        <button onclick="document.getElementById('map-tools-panel').style.display='none'" style="background:none;border:none;cursor:pointer;font-size:14px;color:#888;padding:0">✕</button>
+      </div>
+
+      <!-- Fill / stroke style section -->
+      <div class="style-section">
+        <div class="style-section-title">🎨 Polygones — couleur &amp; contour</div>
+        <div class="style-row">
+          <label>Remplissage</label>
+          <input type="color" id="st-poly-fill" value="#3388ff" oninput="applyStyleToSelected()">
+          <input type="range"  id="st-poly-fill-op" min="0" max="100" value="30" title="Opacité remplissage" oninput="applyStyleToSelected()">
+          <input type="number" id="st-poly-fill-op-v" value="30" min="0" max="100" style="width:36px;font-size:10px" oninput="document.getElementById('st-poly-fill-op').value=this.value;applyStyleToSelected()">%
+        </div>
+        <div class="style-row">
+          <label>Contour</label>
+          <input type="color"  id="st-poly-stroke" value="#3388ff" oninput="applyStyleToSelected()">
+          <input type="number" id="st-poly-stroke-w" value="2" min="0" max="20" oninput="applyStyleToSelected()"> px
+        </div>
+      </div>
+
+      <div class="style-section">
+        <div class="style-section-title">🖊 Polylignes — couleur &amp; épaisseur</div>
+        <div class="style-row">
+          <label>Couleur</label>
+          <input type="color"  id="st-line-color" value="#2980b9" oninput="applyStyleToSelected()">
+          <input type="number" id="st-line-w" value="3" min="1" max="20" oninput="applyStyleToSelected()"> px
+        </div>
+      </div>
+
+      <button onclick="applyStyleToAll()" style="width:100%;margin:8px 0 4px;padding:6px;background:#2980b9;color:white;border:none;border-radius:5px;cursor:pointer;font-size:11px;font-weight:bold">
+        ✓ Appliquer à tous les objets
+      </button>
+
+      <!-- Toggles -->
+      <div class="style-section">
+        <button class="map-tool-btn" id="fill-toggle-btn" onclick="toggleFillMode()">◻ Remplissage : ON</button>
+      </div>
     `;
     document.body.appendChild(toolsPanelEl);
     document.body.appendChild(searchPanelEl);
@@ -1816,22 +1953,21 @@
       searchPanelEl.style.display = 'none';
     });
 
-    // Search toggle button
+    // Search toggle button — uses 📍 to differ from zoom window 🔎
     const SearchControl = L.Control.extend({
       options: { position: 'topright' },
       onAdd: function () {
         const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
         const btn = L.DomUtil.create('a', 'ctrl-btn', container);
-        btn.href = '#';
-        btn.title = 'Rechercher des coordonnées sur la carte';
-        btn.innerHTML = '🔍';
+        btn.href='#'; btn.title='Rechercher des coordonnées sur la carte';
+        btn.innerHTML='📍';  /* pin = search/locate */
         L.DomEvent.disableClickPropagation(container);
-        L.DomEvent.on(btn, 'click', function(e) {
+        L.DomEvent.on(btn,'click',function(e){
           L.DomEvent.preventDefault(e);
-          const panel = document.getElementById('search-panel');
-          const show = panel.style.display === 'none' || !panel.style.display;
-          panel.style.display = show ? 'block' : 'none';
-          if (show) setTimeout(() => document.getElementById('search-coord-input').focus(), 50);
+          const panel=document.getElementById('search-panel');
+          const show=panel.style.display==='none'||!panel.style.display;
+          panel.style.display=show?'block':'none';
+          if(show) setTimeout(()=>document.getElementById('search-coord-input').focus(),50);
         });
         return container;
       }
@@ -1927,7 +2063,7 @@
         return container;
       }
     });
-    map.addControl(new NavControl());
+    // NavControl → replaced by NavRightControl (topright)
 
 
     // ─── importFromExcel ──────────────────────────────────────────────────────
@@ -2112,13 +2248,9 @@
       if (anyActive) {
         if (e.key === 'Escape') {
           e.preventDefault();
-          // Cancel / finish drawing
-          if (activeDrawMode) {
-            try { activeDrawMode.disable(); } catch(_) {}
-          }
-          if (activeEditMode) {
-            try { activeEditMode.revertLayers(); activeEditMode.disable(); } catch(_) {}
-          }
+          if (_deleteMode) _deactivateDeleteMode();
+          if (activeDrawMode) { try { activeDrawMode.disable(); } catch(_) {} }
+          if (activeEditMode) { try { activeEditMode.revertLayers(); activeEditMode.disable(); } catch(_) {} }
         } else if ((e.key === 'Delete' || e.key === 'Backspace') && activeDrawMode) {
           e.preventDefault();
           // Delete last vertex during polygon/polyline drawing
@@ -2135,14 +2267,15 @@
           }
         }
       } else {
-        // Not drawing — Delete key deletes selected feature in edit mode
+        // Not in draw/edit mode
+        if (e.key === 'Escape') {
+          if (_deleteMode) _deactivateDeleteMode();
+          if (typeof _rulerActive !== 'undefined' && _rulerActive) _rulerStop();
+        }
+        // Delete key with no draw active — no-op (handled by custom DeleteControl)
         if ((e.key === 'Delete' || e.key === 'Backspace') && !e.ctrlKey) {
-          // Only if a leaflet-draw delete toolbar is NOT already active
-          // (to avoid conflict with text inputs)
           const active = document.activeElement;
           if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) return;
-          // Trigger leaflet-draw delete mode for all drawn items? 
-          // For now, no-op unless in edit mode.
         }
       }
     });
@@ -2280,9 +2413,12 @@
     let _gcps           = [];
     let _georefTransform = null;
     let georefOverlay   = null;
-    let clipMode        = null;   // null | 'select' | 'draw' | 'ready'
+    let clipMode        = null;
     let clipBoundary    = null;
     let clipHighlight   = null;
+    // Print extent (used in CREATED handler — must be declared before map.on)
+    let printRectLayer  = null;
+    let printBounds     = null;
 
     // ─── Print extent mode flag (set before L.Draw.Rectangle starts) ─────────
     let printExtentMode = false;
@@ -2802,6 +2938,7 @@
         layers.forEach(function(g) {
           let layer;
           if (g.type === 'point') {
+            if (!isFinite(g.lat) || !isFinite(g.lng)) return;
             layer = L.marker([g.lat, g.lng]);
             layer.customName = g.name || 'Point DXF';
             layer.bindPopup(`<b>${layer.customName}</b><br>Lat: ${g.lat.toFixed(6)}<br>Lon: ${g.lng.toFixed(6)}`);
@@ -2809,7 +2946,9 @@
             allLatLngs.push(L.latLng(g.lat, g.lng));
             objCount.point++;
           } else if (g.type === 'polyline' && g.coords && g.coords.length >= 2) {
-            const latLngs = g.coords.map(c => L.latLng(c.lat, c.lng));
+            const latLngs = g.coords.map(c => L.latLng(c.lat, c.lng))
+              .filter(ll => isFinite(ll.lat) && isFinite(ll.lng));
+            if (latLngs.length < 2) return; // forEach: return not continue
             layer = L.polyline(latLngs, { color: g.color || '#3388ff', weight: g.weight || 3 });
             layer.customName = g.name || 'Ligne DXF';
             layer.bindPopup(`<b>${layer.customName}</b>`);
@@ -2817,7 +2956,9 @@
             allLatLngs.push(...latLngs);
             objCount.line++;
           } else if (g.type === 'polygon' && g.coords && g.coords.length >= 3) {
-            const latLngs = g.coords.map(c => L.latLng(c.lat, c.lng));
+            const latLngs = g.coords.map(c => L.latLng(c.lat, c.lng))
+              .filter(ll => isFinite(ll.lat) && isFinite(ll.lng));
+            if (latLngs.length < 3) return; // forEach: use return not continue
             layer = L.polygon(latLngs, { color: g.color || '#00cc00', weight: 2, fillOpacity: 0.2 });
             layer.customName = g.name || 'Polygone DXF';
             layer.bindPopup(`<b>${layer.customName}</b>`);
@@ -3081,7 +3222,7 @@
         return container;
       }
     });
-    map.addControl(new CaptureModeControl());
+    // CaptureModeControl merged into DataControl above
 
     // ─── Outils Avancés Bar: MNT + Géoréférencement + Découpe ────────────────
     const AdvToolsControl = L.Control.extend({
@@ -3090,40 +3231,134 @@
         const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
         L.DomEvent.disableClickPropagation(container);
 
-        // DTM button
-        const dtmBtn = L.DomUtil.create('a', 'ctrl-btn', container);
-        dtmBtn.href = '#'; dtmBtn.id = 'dtm-tool-btn';
-        dtmBtn.title = 'Modèle Numérique de Terrain — visualiser le relief d\'un polygone';
-        dtmBtn.innerHTML = '🏔';
-        L.DomEvent.on(dtmBtn, 'click', function(e) {
+        // Elevation (profil altimétrique) — moved here
+        const elevBtn = L.DomUtil.create('a', 'ctrl-btn', container);
+        elevBtn.href='#'; elevBtn.id='elev-btn';
+        elevBtn.title='Profil altimétrique — sélectionnez une polyligne';
+        elevBtn.innerHTML='📈';
+        L.DomEvent.on(elevBtn,'click',function(e){
           L.DomEvent.preventDefault(e);
-          toggleToolPanel('dtm-panel', container, dtmBtn);
+          isElevationActive=!isElevationActive;
+          elevBtn.classList.toggle('active',isElevationActive);
+          if(isElevationActive){
+            if(_lastElevLayer&&drawnItems.hasLayer(_lastElevLayer)){selectedPolyline=null;updateElevationChart(_lastElevLayer);}
+            else if(selectedPolyline){updateElevationChart(selectedPolyline);}
+          }else{
+            if(elevationChart){elevationChart.destroy();elevationChart=null;}
+            _cleanHoverMarker();
+            document.getElementById('elevation-container').classList.remove('visible');
+            document.getElementById('map').style.height='100%'; map.invalidateSize();
+          }
+        });
+
+        // MNT button
+        const dtmBtn = L.DomUtil.create('a', 'ctrl-btn', container);
+        dtmBtn.href='#'; dtmBtn.id='dtm-tool-btn';
+        dtmBtn.title='Modèle Numérique de Terrain — visualiser le relief d\'un polygone';
+        dtmBtn.innerHTML='🏔';
+        L.DomEvent.on(dtmBtn,'click',function(e){L.DomEvent.preventDefault(e);toggleToolPanel('dtm-panel',container,dtmBtn);});
+
+        // Overlap button
+        const overlapBtnA = L.DomUtil.create('a', 'ctrl-btn', container);
+        overlapBtnA.href='#'; overlapBtnA.id='overlap-tool-btn-a';
+        overlapBtnA.title='Détecter les chevauchements — cliquez sur des polygones puis calculez';
+        overlapBtnA.innerHTML='⊗'; overlapBtnA.style.fontWeight='bold'; overlapBtnA.style.fontSize='18px';
+        const calcBtnA = L.DomUtil.create('a', 'ctrl-btn', container);
+        calcBtnA.href='#'; calcBtnA.id='overlap-calc-btn-a';
+        calcBtnA.title='Calculer le chevauchement'; calcBtnA.innerHTML='✓';
+        calcBtnA.style.cssText='display:none;color:#27ae60;font-weight:bold';
+        L.DomEvent.on(overlapBtnA,'click',function(e){
+          L.DomEvent.preventDefault(e);
+          overlapMode=!overlapMode; setOverlapMode(overlapMode);
+          overlapBtnA.classList.toggle('active',overlapMode);
+          calcBtnA.style.cssText=overlapMode?'color:#27ae60;font-weight:bold':'display:none;color:#27ae60;font-weight:bold';
+        });
+        L.DomEvent.on(calcBtnA,'click',function(e){
+          L.DomEvent.preventDefault(e);
+          if(selectedForOverlap.length<2){alert('Sélectionnez au moins 2 polygones.');return;}
+          _calculateOverlap();
         });
 
         // Georeference button
         const georefBtn = L.DomUtil.create('a', 'ctrl-btn', container);
-        georefBtn.href = '#'; georefBtn.id = 'georef-tool-btn';
-        georefBtn.title = 'Géoréférencement — superposer et positionner une image sur la carte';
-        georefBtn.innerHTML = '📌';
-        L.DomEvent.on(georefBtn, 'click', function(e) {
-          L.DomEvent.preventDefault(e);
-          toggleToolPanel('georef-panel', container, georefBtn);
-        });
+        georefBtn.href='#'; georefBtn.id='georef-tool-btn';
+        georefBtn.title='Géoréférencement — superposer et positionner une image sur la carte';
+        georefBtn.innerHTML='📌';
+        L.DomEvent.on(georefBtn,'click',function(e){L.DomEvent.preventDefault(e);toggleToolPanel('georef-panel',container,georefBtn);});
 
         // Clip button
         const clipBtn = L.DomUtil.create('a', 'ctrl-btn', container);
-        clipBtn.href = '#'; clipBtn.id = 'clip-tool-btn';
-        clipBtn.title = 'Outil de découpe — découper des géométries selon un polygone de masque';
-        clipBtn.innerHTML = '✂';
-        L.DomEvent.on(clipBtn, 'click', function(e) {
-          L.DomEvent.preventDefault(e);
-          toggleToolPanel('clip-panel', container, clipBtn);
-        });
+        clipBtn.href='#'; clipBtn.id='clip-tool-btn';
+        clipBtn.title='Outil de découpe — découper des géométries selon un polygone de masque';
+        clipBtn.innerHTML='✂';
+        L.DomEvent.on(clipBtn,'click',function(e){L.DomEvent.preventDefault(e);toggleToolPanel('clip-panel',container,clipBtn);});
 
         return container;
       }
     });
     map.addControl(new AdvToolsControl());
+
+    // ─── Ruler Control ────────────────────────────────────────────────────────
+    let _rulerActive = false;
+    let _rulerPts    = [];
+    let _rulerLine   = null;
+    let _rulerMarkers = [];
+    let _rulerTooltip = null;
+
+    const RulerControl = L.Control.extend({
+      options: { position: 'topright' },  // RIGHT side, below Snap
+      onAdd: function() {
+        const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+        const btn = L.DomUtil.create('a', 'ctrl-btn', container);
+        btn.href='#'; btn.id='ruler-btn';
+        btn.title='Règle — mesurer des distances (cliquez pour poser des points, double-clic pour terminer)';
+        btn.innerHTML='📐';
+        L.DomEvent.disableClickPropagation(container);
+        L.DomEvent.on(btn,'click',function(e){
+          L.DomEvent.preventDefault(e);
+          _rulerActive ? _rulerStop() : _rulerStart(btn);
+        });
+        return container;
+      }
+    });
+    // RulerControl added after SnapControl below
+
+    function _rulerStart(btn) {
+      _rulerActive = true; btn.classList.add('active');
+      _rulerPts=[]; _rulerMarkers=[];
+      map.getContainer().style.cursor='crosshair';
+      _showMapBanner('📏 Règle active — cliquez pour poser des points. Double-clic pour terminer.');
+      map._rulerClick = function(ev) {
+        _rulerPts.push(ev.latlng);
+        const m = L.circleMarker(ev.latlng,{radius:4,color:'#e74c3c',fillColor:'#fff',fillOpacity:1,weight:2}).addTo(map);
+        _rulerMarkers.push(m);
+        if (_rulerPts.length>1) {
+          if (_rulerLine) map.removeLayer(_rulerLine);
+          _rulerLine = L.polyline(_rulerPts,{color:'#e74c3c',weight:2,dashArray:'6,4'}).addTo(map);
+          const total = _rulerPts.reduce((s,p,i)=>i?s+p.distanceTo(_rulerPts[i-1]):0,0);
+          const label = total>=1000 ? (total/1000).toFixed(3)+' km' : total.toFixed(1)+' m';
+          if (_rulerTooltip) map.removeLayer(_rulerTooltip);
+          _rulerTooltip = L.tooltip({permanent:true,className:'ruler-tooltip',direction:'top'})
+            .setLatLng(ev.latlng).setContent('📏 '+label).addTo(map);
+        }
+      };
+      map._rulerDblClick = function() { _rulerStop(); };
+      map.on('click', map._rulerClick);
+      map.on('dblclick', map._rulerDblClick);
+    }
+    function _rulerStop() {
+      _rulerActive=false;
+      const btn=document.getElementById('ruler-btn');
+      if(btn)btn.classList.remove('active');
+      map.off('click',map._rulerClick);
+      map.off('dblclick',map._rulerDblClick);
+      map.getContainer().style.cursor='';
+      _hideMapBanner();
+      _rulerMarkers.forEach(m=>map.removeLayer(m));
+      if(_rulerLine){map.removeLayer(_rulerLine);_rulerLine=null;}
+      if(_rulerTooltip){map.removeLayer(_rulerTooltip);_rulerTooltip=null;}
+      _rulerPts=[];_rulerMarkers=[];
+    }
 
     function toggleCaptureMode() {
       captureModeActive = !captureModeActive;
@@ -3301,8 +3536,7 @@
     window.hideNorthArrow = hideNorthArrow;
 
     // ─── Print extent selection ───────────────────────────────────────────────
-    let printRectLayer = null;
-    let printBounds = null;
+    // (printRectLayer, printBounds declared early above)
 
     window._updatePrintExtentInfo = function(bounds) {
       const msg = `Emprise définie ✓\nS:${bounds.getSouth().toFixed(5)}° N:${bounds.getNorth().toFixed(5)}°\nO:${bounds.getWest().toFixed(5)}° E:${bounds.getEast().toFixed(5)}°`;
@@ -3769,7 +4003,7 @@
       // No Leaflet map button needed for the legend
     })();
 
-    // ─── Données Bar: Export + Import ─────────────────────────────────────────
+    // ─── Données Bar: Export + Import + Capture ───────────────────────────────
     const DataControl = L.Control.extend({
       options: { position: 'topleft' },
       onAdd: function () {
@@ -3778,41 +4012,113 @@
         L.DomEvent.disableScrollPropagation(container);
 
         const exportBtn = L.DomUtil.create('a', 'ctrl-btn', container);
-        exportBtn.href = '#';
-        exportBtn.title = 'Exporter les données (CSV, TXT, DXF, KML, PDF…)';
-        exportBtn.innerHTML = '💾';
-        L.DomEvent.on(exportBtn, 'click', function(e) {
+        exportBtn.href='#'; exportBtn.title='Exporter les données (CSV, TXT, DXF, KML, PDF…)';
+        exportBtn.innerHTML='💾';
+        L.DomEvent.on(exportBtn,'click',function(e){
           L.DomEvent.preventDefault(e);
-          const dd = document.getElementById('export-dropdown');
-          const rect = container.getBoundingClientRect();
-          const ddH = Math.min(300, window.innerHeight * 0.8);
-          const top = (rect.bottom + ddH > window.innerHeight) ? rect.top - ddH : rect.bottom;
-          dd.style.top  = Math.max(4, top) + 'px';
-          dd.style.left = Math.max(4, rect.left) + 'px';
+          const dd=document.getElementById('export-dropdown');
+          const rect=container.getBoundingClientRect();
+          const ddH=Math.min(300,window.innerHeight*0.8);
+          const top=(rect.bottom+ddH>window.innerHeight)?rect.top-ddH:rect.bottom;
+          dd.style.top=Math.max(4,top)+'px'; dd.style.left=Math.max(4,rect.left)+'px';
           dd.classList.toggle('visible');
           document.getElementById('import-dropdown').classList.remove('visible');
         });
 
         const importBtn = L.DomUtil.create('a', 'ctrl-btn', container);
-        importBtn.href = '#';
-        importBtn.title = 'Importer un fichier (CSV coordonnées, DXF AutoCAD…)';
-        importBtn.innerHTML = '📥';
-        L.DomEvent.on(importBtn, 'click', function(e) {
+        importBtn.href='#'; importBtn.title='Importer un fichier (CSV coordonnées, DXF AutoCAD…)';
+        importBtn.innerHTML='📥';
+        L.DomEvent.on(importBtn,'click',function(e){
           L.DomEvent.preventDefault(e);
-          const dd = document.getElementById('import-dropdown');
-          const rect = container.getBoundingClientRect();
-          const ddH = Math.min(200, window.innerHeight * 0.8);
-          const top = (rect.bottom + ddH > window.innerHeight) ? rect.top - ddH : rect.bottom;
-          dd.style.top  = Math.max(4, top) + 'px';
-          dd.style.left = Math.max(4, rect.left) + 'px';
+          const dd=document.getElementById('import-dropdown');
+          const rect=container.getBoundingClientRect();
+          const ddH=Math.min(200,window.innerHeight*0.8);
+          const top=(rect.bottom+ddH>window.innerHeight)?rect.top-ddH:rect.bottom;
+          dd.style.top=Math.max(4,top)+'px'; dd.style.left=Math.max(4,rect.left)+'px';
           dd.classList.toggle('visible');
           document.getElementById('export-dropdown').classList.remove('visible');
         });
+
+        // Capture button moved here
+        const captureBtn = L.DomUtil.create('a', 'ctrl-btn', container);
+        captureBtn.href='#'; captureBtn.id='capture-mode-btn';
+        captureBtn.title='Capturer en PNG — cliquez sur un rectangle dessiné pour exporter en image';
+        captureBtn.innerHTML='📷';
+        L.DomEvent.on(captureBtn,'click',function(e){L.DomEvent.preventDefault(e);toggleCaptureMode();});
 
         return container;
       }
     });
     map.addControl(new DataControl());
+
+    // ─── Nav buttons (topright, below search+tools) ───────────────────────────
+    const NavRightControl = L.Control.extend({
+      options: { position: 'topright' },
+      onAdd: function() {
+        const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+        L.DomEvent.disableClickPropagation(container);
+
+        const zoomAllBtn = L.DomUtil.create('a','ctrl-btn',container);
+        zoomAllBtn.href='#'; zoomAllBtn.title='Cadrer la vue sur tous les objets dessinés';
+        zoomAllBtn.innerHTML='🗺';  /* map = fit all */
+        L.DomEvent.on(zoomAllBtn,'click',function(e){
+          L.DomEvent.preventDefault(e);
+          const layers=drawnItems.getLayers();
+          if(!layers.length){alert('Aucun objet dessiné !');return;}
+          try{map.fitBounds(drawnItems.getBounds(),{padding:[50,50],maxZoom:16});}catch(err){}
+        });
+
+        const zwBtn = L.DomUtil.create('a','ctrl-btn',container);
+        zwBtn.href='#'; zwBtn.title='Zoom fenêtre — dessinez un rectangle sur la carte';
+        zwBtn.innerHTML='⬚';  /* empty square = draw window rectangle */
+        let zwA=false,zwS=null,zwR=null;
+        L.DomEvent.on(zwBtn,'click',function(e){
+          L.DomEvent.preventDefault(e);
+          zwA=!zwA; zwBtn.classList.toggle('active',zwA);
+          map.dragging[zwA?'disable':'enable']();
+          map.getContainer().style.cursor=zwA?'crosshair':'';
+          if(!zwA&&zwR){map.removeLayer(zwR);zwR=null;}
+        });
+        map.getContainer().addEventListener('mousedown',function(ev){
+          if(!zwA)return;
+          zwS=map.containerPointToLatLng(L.point(ev.offsetX,ev.offsetY));
+          if(zwR)map.removeLayer(zwR);
+          zwR=L.rectangle([zwS,zwS],{color:'#3498db',weight:2,fillOpacity:0.1,dashArray:'6,4'}).addTo(map);
+          ev.stopPropagation();
+        });
+        map.getContainer().addEventListener('mousemove',function(ev){
+          if(!zwA||!zwS||!zwR)return;
+          zwR.setBounds(L.latLngBounds(zwS,map.containerPointToLatLng(L.point(ev.offsetX,ev.offsetY))));
+        });
+        map.getContainer().addEventListener('mouseup',function(ev){
+          if(!zwA||!zwS)return;
+          const b=L.latLngBounds(zwS,map.containerPointToLatLng(L.point(ev.offsetX,ev.offsetY)));
+          if(zwR){map.removeLayer(zwR);zwR=null;}
+          zwS=null;zwA=false;zwBtn.classList.remove('active');
+          map.dragging.enable();map.getContainer().style.cursor='';
+          if(b.isValid()&&b.getNorthEast().distanceTo(b.getSouthWest())>20)map.fitBounds(b);
+        });
+
+        return container;
+      }
+    });
+    map.addControl(new NavRightControl());
+
+    // Snap button (topright, below tools)
+    const SnapControl = L.Control.extend({
+      options: { position: 'topright' },
+      onAdd: function() {
+        const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
+        const btn = L.DomUtil.create('a','ctrl-btn',container);
+        btn.href='#'; btn.id='snap-ctrl-btn'; btn.title='Aimantation (Snapping) vers les vertices existants';
+        btn.innerHTML='🧲';
+        L.DomEvent.disableClickPropagation(container);
+        L.DomEvent.on(btn,'click',function(e){L.DomEvent.preventDefault(e);toggleSnapping();});
+        return container;
+      }
+    });
+    map.addControl(new SnapControl());
+    map.addControl(new RulerControl()); // 📐 below Snap on topright
 
 
     // ═══════════════════════════════════════════════════════════════════
@@ -3874,6 +4180,221 @@
       document.getElementById('spanel-'+id).classList.add('active');
       document.querySelectorAll('.s-tab').forEach(t=>{
         if((t.getAttribute('onclick')||'').includes("'"+id+"'")) t.classList.add('active');
+      });
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // METRIC CONVERTERS MODULE
+    // ════════════════════════════════════════════════════════════════════
+    // ════════════════════════════════════════════════════════════════════
+    // CONVERTISSEURS MÉTRIQUES — Google style (single dropdown category)
+    // Unités ordonnées : système métrique français d'abord
+    // ════════════════════════════════════════════════════════════════════
+    const _MC = {
+      Longueur: {
+        special: false,
+        // m, km, cm, mm en premier (SI/métrique), puis impérial
+        units: [
+          ['Mètre (m)',          1],
+          ['Kilomètre (km)',     1e3],
+          ['Centimètre (cm)',    0.01],
+          ['Millimètre (mm)',    0.001],
+          ['Mètre marin (nmi)', 1852],
+          ['Yard (yd)',          0.9144],
+          ['Pied (ft)',          0.3048],
+          ['Pouce (in)',         0.0254],
+          ['Mile (mi)',          1609.344],
+        ]
+      },
+      Surface: {
+        special: false,
+        units: [
+          ['Mètre² (m²)',        1],
+          ['Kilomètre² (km²)',   1e6],
+          ['Hectare (ha)',       1e4],
+          ['Are (a)',            100],
+          ['Centimètre² (cm²)', 0.0001],
+          ['Millimètre² (mm²)', 1e-6],
+          ['Pied² (ft²)',        0.092903],
+          ['Yard² (yd²)',        0.836127],
+          ['Acre',               4046.856],
+          ['Mile² (mi²)',        2589988.11],
+        ]
+      },
+      Volume: {
+        special: false,
+        units: [
+          ['Mètre³ (m³)',        1],
+          ['Litre (L)',          0.001],
+          ['Décilitre (dL)',     0.0001],
+          ['Centilitre (cL)',    0.00001],
+          ['Millilitre (mL)',    1e-6],
+          ['Pied³ (ft³)',        0.028317],
+          ['Pouce³ (in³)',       1.6387e-5],
+          ['Gallon US (gal)',    0.003785],
+          ['Gallon UK (gal)',    0.004546],
+        ]
+      },
+      Masse: {
+        special: false,
+        units: [
+          ['Kilogramme (kg)',    1],
+          ['Gramme (g)',         0.001],
+          ['Tonne métrique (t)', 1000],
+          ['Milligramme (mg)',   1e-6],
+          ['Quintal (q)',        100],
+          ['Livre (lb)',         0.453592],
+          ['Once (oz)',          0.028350],
+        ]
+      },
+      Pression: {
+        special: false,
+        units: [
+          ['Pascal (Pa)',        1],
+          ['Kilopascal (kPa)',   1000],
+          ['Mégapascal (MPa)',   1e6],
+          ['Bar',                100000],
+          ['Millibar (mbar)',    100],
+          ['Atmosphère (atm)',   101325],
+          ['mm Hg (Torr)',       133.322],
+          ['psi',                6894.757],
+        ]
+      },
+      Angle: {
+        special: false,
+        units: [
+          ['Degré (°)',          1],
+          ['Radian (rad)',       180/Math.PI],
+          ['Grade (gon)',        0.9],
+          ['Minute d\'arc (\')', 1/60],
+          ['Seconde d\'arc (")', 1/3600],
+          ['Tour complet (tr)',  360],
+        ]
+      },
+      Température: {
+        special: true,
+        units: ['°Celsius (°C)', '°Fahrenheit (°F)', 'Kelvin (K)'],
+        convert: function(v, from, to) {
+          // All to Celsius first
+          let c = from === '°Fahrenheit (°F)' ? (v-32)*5/9
+                : from === 'Kelvin (K)'        ? v - 273.15
+                : v;
+          return to === '°Fahrenheit (°F)' ? c*9/5 + 32
+               : to === 'Kelvin (K)'        ? c + 273.15
+               : c;
+        }
+      }
+    };
+
+    function mcToggleAll() {
+      const body  = document.getElementById('mc-all-body');
+      const arrow = document.getElementById('mc-all-arrow');
+      const open  = body.classList.toggle('open');
+      arrow.style.transform = open ? 'rotate(0deg)' : 'rotate(-90deg)';
+    }
+
+    function _mcGetUnits(cat) {
+      const cfg = _MC[cat];
+      return cfg.special ? cfg.units : cfg.units.map(u => u[0]);
+    }
+
+    function _mcPopulateSelects(cat) {
+      const units = _mcGetUnits(cat);
+      const from  = document.getElementById('mc-unit-from');
+      const to    = document.getElementById('mc-unit-to');
+      if (!from || !to) return;
+      const mkOpts = (sel) => units.map((u,i) =>
+        `<option value="${u}"${i===sel?' selected':''}>${u}</option>`).join('');
+      from.innerHTML = mkOpts(0);
+      to.innerHTML   = mkOpts(1);
+    }
+
+    function mcCatChanged() {
+      const cat = document.getElementById('mc-cat').value;
+      _mcPopulateSelects(cat);
+      document.getElementById('mc-val-in').value  = '';
+      document.getElementById('mc-val-out').value = '';
+      document.getElementById('mc-formula').textContent = '';
+    }
+
+    function mcConvertNew() {
+      const cat = document.getElementById('mc-cat').value;
+      const cfg = _MC[cat];
+      const val = parseFloat(document.getElementById('mc-val-in').value);
+      const fu  = document.getElementById('mc-unit-from').value;
+      const tu  = document.getElementById('mc-unit-to').value;
+      const outEl  = document.getElementById('mc-val-out');
+      const fmtEl  = document.getElementById('mc-formula');
+      const fmtWrap= document.getElementById('mc-formula-wrap');
+      if (isNaN(val)) {
+        outEl.value = '';
+        if (fmtWrap) fmtWrap.style.display = 'none';
+        return;
+      }
+      let result;
+      if (cfg.special) {
+        result = cfg.convert(val, fu, tu);
+      } else {
+        const uMap = Object.fromEntries(cfg.units);
+        result = val * uMap[fu] / uMap[tu];
+      }
+      const r = parseFloat(result.toPrecision(8));
+      outEl.value = r;
+      // Formula badge (Google-style)
+      if (fmtWrap && fmtEl) {
+        fmtWrap.style.display = 'flex';
+        const fuShort = fu.split('(')[0].trim();
+        const tuShort = tu.split('(')[0].trim();
+        if (fu === tu) {
+          fmtEl.textContent = `${val} ${fuShort} = ${r} ${tuShort}`;
+        } else {
+          const ratio = r / val;
+          fmtEl.textContent = `multiplier la valeur en ${fuShort} par ${isFinite(ratio) ? parseFloat(ratio.toPrecision(4)) : '…'} pour obtenir des ${tuShort}`;
+        }
+      }
+    }
+
+    function mcInit() {
+      // Populate initial category
+      const cat = document.getElementById('mc-cat');
+      if (cat) { _mcPopulateSelects(cat.value); }
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', mcInit);
+    } else {
+      setTimeout(mcInit, 50);
+    }
+
+    // ════════════════════════════════════════════════════════════════════
+    // APPLY STYLE TO OBJECTS
+    // ════════════════════════════════════════════════════════════════════
+    function _getStyleValues() {
+      return {
+        polyFill:    document.getElementById('st-poly-fill')?.value      || '#3388ff',
+        polyFillOp:  parseFloat(document.getElementById('st-poly-fill-op')?.value || 30) / 100,
+        polyStroke:  document.getElementById('st-poly-stroke')?.value    || '#3388ff',
+        polyStrokeW: parseFloat(document.getElementById('st-poly-stroke-w')?.value || 2),
+        lineColor:   document.getElementById('st-line-color')?.value     || '#2980b9',
+        lineW:       parseFloat(document.getElementById('st-line-w')?.value || 3)
+      };
+    }
+
+    function applyStyleToSelected() {
+      // live preview only — no object selected by default, see applyStyleToAll
+    }
+
+    function applyStyleToAll() {
+      const s = _getStyleValues();
+      saveState();
+      drawnItems.eachLayer(function(layer) {
+        if (layer instanceof L.Polygon) {
+          layer.setStyle({ color: s.polyStroke, weight: s.polyStrokeW,
+                           fillColor: s.polyFill, fillOpacity: s.polyFillOp });
+          layer.options._savedFillOpacity = s.polyFillOp;
+        } else if (layer instanceof L.Polyline) {
+          layer.setStyle({ color: s.lineColor, weight: s.lineW });
+        }
       });
     }
 
@@ -3960,9 +4481,11 @@
 
     function toggleSnapping() {
       _snapOn = !_snapOn;
-      const btn = document.getElementById('snap-toggle-btn');
-      btn.textContent = `🧲 Snapping : ${_snapOn ? 'ON' : 'OFF'}`;
-      btn.classList.toggle('active', _snapOn);
+      const btn  = document.getElementById('snap-toggle-btn');
+      const btn2 = document.getElementById('snap-ctrl-btn');
+      const label = `🧲 Snapping : ${_snapOn ? 'ON' : 'OFF'}`;
+      if (btn)  { btn.textContent = label; btn.classList.toggle('active', _snapOn); }
+      if (btn2) { btn2.classList.toggle('active', _snapOn); }
       if (_snapOn) {
         // Override mouseEventToLatLng so drawn points snap to existing vertices
         _origMETL = L.Map.prototype.mouseEventToLatLng;
@@ -5889,6 +6412,67 @@
       _renderLegPanel(); _syncLeg();
       sbUpdateEx();
     },600);
+
+    // ─── Sidebar toggle (desktop hide/show + mobile) ──────────────────────────
+    let _sidebarCollapsed = false;
+
+    function toggleDesktopSidebar() {
+      const sb  = document.getElementById('sidebar');
+      const btn = document.getElementById('sidebar-toggle');
+      _sidebarCollapsed = !_sidebarCollapsed;
+      sb.classList.toggle('collapsed', _sidebarCollapsed);
+      btn.textContent = _sidebarCollapsed ? '▶' : '◀';
+      btn.style.left  = _sidebarCollapsed ? '0' : (sb.offsetWidth) + 'px';
+      setTimeout(() => map.invalidateSize(), 280);
+    }
+
+    function toggleMobileSidebar() {
+      const sb  = document.getElementById('sidebar');
+      const ov  = document.getElementById('mobile-overlay');
+      const open = sb.classList.toggle('mobile-open');
+      ov.classList.toggle('visible', open);
+    }
+
+    // ─── Sidebar drag-resize ──────────────────────────────────────────────────
+    (function initSidebarResize() {
+      const handle = document.getElementById('sidebar-resize-handle');
+      const sb     = document.getElementById('sidebar');
+      const btn    = document.getElementById('sidebar-toggle');
+      if (!handle || !sb) return;
+      let dragging = false, startX = 0, startW = 0;
+      handle.addEventListener('mousedown', function(e) {
+        dragging = true; startX = e.clientX; startW = sb.offsetWidth;
+        handle.classList.add('dragging');
+        document.body.style.userSelect = 'none';
+        document.body.style.cursor = 'col-resize';
+        e.preventDefault();
+      });
+      document.addEventListener('mousemove', function(e) {
+        if (!dragging) return;
+        const newW = Math.max(220, Math.min(560, startW + e.clientX - startX));
+        sb.style.width = newW + 'px';
+        if (btn && !_sidebarCollapsed) btn.style.left = newW + 'px';
+        map.invalidateSize();
+      });
+      document.addEventListener('mouseup', function() {
+        if (!dragging) return;
+        dragging = false;
+        handle.classList.remove('dragging');
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+      });
+    })();
+
+    // Position sidebar toggle button correctly on load
+    (function() {
+      const sb  = document.getElementById('sidebar');
+      const btn = document.getElementById('sidebar-toggle');
+      if (sb && btn) btn.style.left = sb.offsetWidth + 'px';
+      window.addEventListener('resize', function() {
+        if (!_sidebarCollapsed && window.innerWidth > 768)
+          btn.style.left = sb.offsetWidth + 'px';
+      });
+    })();
   </script>
 </body>
 </html>
