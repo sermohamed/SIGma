@@ -122,7 +122,18 @@
       .leaflet-control-attribution  { display: block !important; }
     }
 
-    /* ── CSS tooltip for all custom controls ── */
+    /* ── Leaflet Draw actions bar (Save/Cancel during edit) — always on top ── */
+    .leaflet-draw-actions {
+      z-index: 1200 !important;
+    }
+    .leaflet-draw-actions a {
+      font-size: 13px !important;
+      line-height: 28px !important;
+      height: 28px !important;
+      padding: 0 10px !important;
+    }
+    /* Ensure edit/delete toolbar is visible */
+    .leaflet-draw-section { z-index: 1100 !important; }
     .leaflet-control a.ctrl-btn { position: relative; }
     .leaflet-control a.ctrl-btn:hover::after {
       content: attr(title);
@@ -444,18 +455,22 @@
     #map-wrap { flex: 1; position: relative; overflow: hidden; height: 100vh; }
     #map { position: absolute; inset: 0; width: 100%; height: 100%; }
 
-    /* ── Sidebar hide/show toggle button ── */
+    /* ── Sidebar collapse toggle — always at right edge of sidebar ── */
     #sidebar-toggle {
-      position: absolute; top: 50%; left: 0;
+      position: absolute;
+      top: 50%; right: -22px;
       transform: translateY(-50%);
       z-index: 1100; background: #2980b9;
       color: white; border: none; border-radius: 0 8px 8px 0;
-      padding: 14px 6px; cursor: pointer; font-size: 14px;
+      width: 22px; padding: 18px 4px; cursor: pointer; font-size: 13px;
       box-shadow: 2px 0 8px rgba(0,0,0,0.4);
-      transition: left 0.25s, background 0.15s;
+      transition: background 0.15s;
       line-height: 1;
     }
     #sidebar-toggle:hover { background: #3498db; }
+    #sidebar.collapsed #sidebar-toggle { right: -22px; }
+    #sidebar.collapsed #sidebar-toggle::before { content: '▶'; }
+    #sidebar:not(.collapsed) #sidebar-toggle::before { content: '◀'; }
     /* Drag handle on right edge of sidebar */
     #sidebar-resize-handle {
       position: absolute; top: 0; right: 0; width: 6px; height: 100%;
@@ -469,16 +484,33 @@
 
     /* ── Mobile responsive — same layout as desktop but scaled ── */
     @media (max-width: 768px) {
-      #webapp-root { flex-direction: row; overflow-x: auto; min-width: 700px; }
-      html, body { overflow-x: auto; min-width: 700px; }
-      #sidebar { width: 280px !important; min-width: 240px !important; flex-shrink: 0; }
-      #map-wrap { flex: 1; min-width: 320px; }
-      /* Slightly smaller controls on mobile */
-      .ctrl-btn { width: 26px; height: 26px; line-height: 26px; font-size: 14px; }
-      .leaflet-control a { width: 26px !important; height: 26px !important; }
-      /* Sidebar toggle still visible and functional */
-      #sidebar-toggle { display: flex !important; }
-      /* Mobile menu button hidden — sidebar always visible */
+      #webapp-root { flex-direction: row; overflow-x: auto; min-width: 680px; }
+      html, body { overflow-x: auto; min-width: 680px; }
+      #sidebar { width: 260px !important; min-width: 220px !important; flex-shrink: 0; }
+      #map-wrap { flex: 1; min-width: 300px; }
+      /* Larger touch targets on mobile */
+      .ctrl-btn {
+        width: 36px !important; height: 36px !important;
+        line-height: 36px !important; font-size: 17px !important;
+      }
+      .leaflet-control a {
+        width: 36px !important; height: 36px !important;
+        line-height: 36px !important;
+      }
+      /* Sidebar toggle: bigger touch target */
+      #sidebar-toggle {
+        width: 28px !important;
+        padding: 24px 5px !important;
+        font-size: 15px !important;
+        right: -28px !important;
+      }
+      /* Resize handle: wider touch area */
+      #sidebar-resize-handle { width: 12px !important; }
+      /* Sidebar form inputs: bigger on mobile */
+      .si, .ss { font-size: 14px !important; padding: 7px 10px !important; }
+      .sb { padding: 10px !important; font-size: 13px !important; }
+      .sg-h { font-size: 13px !important; padding: 8px 12px !important; }
+      /* Mobile menu button — hidden (sidebar always visible) */
       #mobile-menu-btn { display: none !important; }
       #mobile-overlay  { display: none !important; }
     }
@@ -529,6 +561,7 @@
   <!-- ══════════════════════ SIDEBAR ══════════════════════ -->
   <div id="sidebar">
     <div id="sidebar-resize-handle" title="Glissez pour redimensionner le panneau"></div>
+    <button id="sidebar-toggle" onclick="toggleDesktopSidebar()" title="Afficher/Masquer le panneau"></button>
     <div id="sidebar-tabs">
       <button class="s-tab active" onclick="sbTab('conv')">🗺 Convertisseur</button>
       <button class="s-tab" onclick="sbTab('print')">🖨 Impression</button>
@@ -537,7 +570,13 @@
 
       <!-- TAB: CONVERTISSEUR -->
       <div class="s-panel active" id="spanel-conv">
-        <div style="font-size:13px;font-weight:bold;color:#ecf0f1;margin:4px 0 10px">🗺 Convertisseur de Coordonnées</div>
+        <!-- Coordinate Converter — foldable -->
+        <div class="sg" style="margin-bottom:8px">
+          <div class="sg-h" onclick="ccToggle()" style="cursor:pointer;display:flex;justify-content:space-between;align-items:center;user-select:none">
+            🗺 Convertisseur de Coordonnées
+            <span id="cc-arrow" class="mc-arrow">▼</span>
+          </div>
+          <div id="cc-body" class="mc-body open" style="padding:8px 10px">
         <div class="sg">
           <div class="sg-h">Système &amp; Format</div>
           <div class="sg-b">
@@ -567,6 +606,8 @@
         <button class="sb blue" onclick="sbConvert()">🔄 Convertir &amp; Placer sur carte</button>
         <div id="sb-result" class="sresult">Saisissez des coordonnées ci-dessus…</div>
         <button class="sb teal" id="sb-gmaps" style="display:none" onclick="sbOpenMaps()">🌐 Ouvrir dans Google Maps</button>
+          </div><!-- /cc-body -->
+        </div><!-- /coordinate converter sg -->
         <div class="sg" style="margin-top:10px">
           <div class="sg-h">📜 Historique</div>
           <div class="sg-b" id="sb-history" style="max-height:180px;overflow-y:auto;font-size:11px">
@@ -697,8 +738,6 @@
 
   <!-- ══════════════════════ MAP ══════════════════════ -->
   <div id="map-wrap">
-    <!-- Sidebar toggle button -->
-    <button id="sidebar-toggle" onclick="toggleDesktopSidebar()" title="Afficher/Masquer le panneau">◀</button>
     <div id="map"></div>
   <div id="elevation-container">
     <canvas id="elevation-chart"></canvas>
@@ -974,7 +1013,7 @@
     // Initialize map
     const map = L.map('map', {
       doubleClickZoom: false, maxZoom: 21
-    }).setView([31.629713, -8.013690], 13);
+    }).setView([31.6295, -8.0215], 13);
     
     console.log("Map initialized at:", map.getCenter(), "Zoom:", map.getZoom());
 
@@ -1870,8 +1909,8 @@
     searchPanelEl.innerHTML = `
       <div style="font-weight:bold;margin-bottom:8px;font-size:13px;color:#333;">🔍 Rechercher coordonnées</div>
       <label>Latitude, Longitude :</label>
-      <input type="text" id="search-coord-input" placeholder="31.629713, -8.013690">
-      <span class="example-text" id="search-example">Ex : 31.629713, -8.013690</span>
+      <input type="text" id="search-coord-input" placeholder="31.6295, -8.0215">
+      <span class="example-text" id="search-example">Ex : 31.6295, -8.0215 (Marrakech)</span>
       <div class="btn-row">
         <button class="btn-go" id="search-go-btn">Rechercher</button>
         <button class="btn-close" id="search-close-btn">✕</button>
@@ -1933,7 +1972,7 @@
         const lat = parseFloat(parts[0]);
         const lon = parseFloat(parts[1]);
         if (!isNaN(lat) && !isNaN(lon)) {
-          map.setView([lat, lon], 16);
+          map.setView([lat, lon], 14);
           const marker = L.marker([lat, lon]).addTo(map);
           marker.bindPopup(`Recherche : ${lat.toFixed(6)}, ${lon.toFixed(6)}`).openPopup();
           setTimeout(() => map.removeLayer(marker), 5000);
@@ -2232,7 +2271,7 @@
       } else if (e.ctrlKey && e.shiftKey && e.key === 'I') {
         // Quick test import with Ctrl+Shift+I
         e.preventDefault();
-        const testCSV = "Nom,Lat,Lon\nParcelle A,31.629713,-8.013690\nParcelle A,31.629813,-8.013590\nParcelle A,31.629913,-8.013690\nParcelle A,31.629813,-8.013790\nParcelle B,31.630000,-8.014000\nParcelle B,31.630100,-8.013900\nParcelle B,31.630200,-8.014000\nParcelle B,31.630100,-8.014100\nPoint 1,31.631000,-8.015000\nPoint 2,31.631500,-8.015500";
+        const testCSV = "Nom,Lat,Lon\nParcelle A,31.6295,-8.0215\nParcelle A,31.629813,-8.013590\nParcelle A,31.629913,-8.013690\nParcelle A,31.629813,-8.013790\nParcelle B,31.630000,-8.014000\nParcelle B,31.630100,-8.013900\nParcelle B,31.630200,-8.014000\nParcelle B,31.630100,-8.014100\nPoint 1,31.631000,-8.015000\nPoint 2,31.631500,-8.015500";
         console.log("TEST IMPORT - Ctrl+Shift+I pressed");
         importFromExcel(testCSV);
       }
@@ -2251,6 +2290,10 @@
           if (_deleteMode) _deactivateDeleteMode();
           if (activeDrawMode) { try { activeDrawMode.disable(); } catch(_) {} }
           if (activeEditMode) { try { activeEditMode.revertLayers(); activeEditMode.disable(); } catch(_) {} }
+        } else if (e.key === 'Enter' && activeEditMode && !activeDrawMode) {
+          // Enter = save edits (same as clicking "Enregistrer")
+          e.preventDefault();
+          try { activeEditMode.save(); activeEditMode.disable(); } catch(_) {}
         } else if ((e.key === 'Delete' || e.key === 'Backspace') && activeDrawMode) {
           e.preventDefault();
           // Delete last vertex during polygon/polyline drawing
@@ -2675,7 +2718,7 @@
         const pos = marker.getLatLng();
         if (Math.abs(pos.lat - lat) < 0.000001 && Math.abs(pos.lng - lon) < 0.000001) {
           found = true;
-          map.setView([lat, lon], 18);
+          map.setView([lat, lon], 14);
           marker.openPopup();
           console.log("Found and opened existing marker:", marker.customName);
         }
@@ -3312,7 +3355,7 @@
         const btn = L.DomUtil.create('a', 'ctrl-btn', container);
         btn.href='#'; btn.id='ruler-btn';
         btn.title='Règle — mesurer des distances (cliquez pour poser des points, double-clic pour terminer)';
-        btn.innerHTML='📐';
+        btn.innerHTML='📏';
         L.DomEvent.disableClickPropagation(container);
         L.DomEvent.on(btn,'click',function(e){
           L.DomEvent.preventDefault(e);
@@ -4293,6 +4336,14 @@
       arrow.style.transform = open ? 'rotate(0deg)' : 'rotate(-90deg)';
     }
 
+    function ccToggle() {
+      const body  = document.getElementById('cc-body');
+      const arrow = document.getElementById('cc-arrow');
+      if (!body) return;
+      const open  = body.classList.toggle('open');
+      arrow.style.transform = open ? 'rotate(0deg)' : 'rotate(-90deg)';
+    }
+
     function _mcGetUnits(cat) {
       const cfg = _MC[cat];
       return cfg.special ? cfg.units : cfg.units.map(u => u[0]);
@@ -4742,7 +4793,7 @@
       const sys=document.getElementById('sb-sys').value;
       const fmt=document.getElementById('sb-fmt').value;
       // Exemple : Rabat (34.020°N, 6.842°W) → Lambert Z1 ≈ X=204000, Y=393000
-      let ex; if(sys==='lambert') ex={x:'204350',y:'393165'};
+      let ex; if(sys==='lambert') ex={x:'168800',y:'390700'};
       else if(fmt==='dec') ex={x:'31.62971',y:'-8.01369'};
       else if(fmt==='dms') ex={x:'31° 37\'46.96\" N',y:'8° 00\'49.28\" W'};
       else ex={x:'31° 37.783\'',y:'8° 00.821\''};
@@ -4820,13 +4871,13 @@
       L.marker([lat,lon],{icon}).addTo(map)
         .bindPopup(`<b>${lbl}</b><br>${lat.toFixed(5)}°, ${lon.toFixed(5)}°<br>X=${Math.round(lx)}, Y=${Math.round(ly)}<br>
           <a href="#" onclick="window.open('https://www.google.com/maps?q=${lat},${lon}','_blank');return false">🧭 Google Maps</a>`);
-      map.setView([lat,lon],Math.max(map.getZoom(),14));
+      map.setView([lat,lon], Math.min(Math.max(map.getZoom(), 13), 14));
     }
     function sbOpenMaps(){ if(_curLat)window.open(`https://www.google.com/maps?q=${_curLat},${_curLon}`,'_blank'); }
     function _renderHist(){
       const el=document.getElementById('sb-history');
       if(!_convHist.length){el.innerHTML='<span style="color:#7f8c8d">Aucune conversion encore.</span>';return;}
-      el.innerHTML=_convHist.map(h=>`<div style="padding:3px 0;border-bottom:1px solid #34495e;cursor:pointer" onclick="map.setView([${h.lat},${h.lon}],15)">
+      el.innerHTML=_convHist.map(h=>`<div style="padding:3px 0;border-bottom:1px solid #34495e;cursor:pointer" onclick="map.setView([${h.lat},${h.lon}],14)">
         <b style="color:#ecf0f1">${h.lbl}</b><br>
         <span style="color:#7f8c8d;font-size:10px">${h.lat.toFixed(5)}°, ${h.lon.toFixed(5)}° | X=${Math.round(h.lx)}, Y=${Math.round(h.ly)}</span>
       </div>`).join('');
@@ -6417,61 +6468,45 @@
     let _sidebarCollapsed = false;
 
     function toggleDesktopSidebar() {
-      const sb  = document.getElementById('sidebar');
-      const btn = document.getElementById('sidebar-toggle');
+      const sb = document.getElementById('sidebar');
       _sidebarCollapsed = !_sidebarCollapsed;
       sb.classList.toggle('collapsed', _sidebarCollapsed);
-      btn.textContent = _sidebarCollapsed ? '▶' : '◀';
-      btn.style.left  = _sidebarCollapsed ? '0' : (sb.offsetWidth) + 'px';
       setTimeout(() => map.invalidateSize(), 280);
     }
 
-    function toggleMobileSidebar() {
-      const sb  = document.getElementById('sidebar');
-      const ov  = document.getElementById('mobile-overlay');
-      const open = sb.classList.toggle('mobile-open');
-      ov.classList.toggle('visible', open);
-    }
-
-    // ─── Sidebar drag-resize ──────────────────────────────────────────────────
+    // ─── Sidebar drag-resize (mouse + touch) ──────────────────────────────────
     (function initSidebarResize() {
       const handle = document.getElementById('sidebar-resize-handle');
       const sb     = document.getElementById('sidebar');
-      const btn    = document.getElementById('sidebar-toggle');
       if (!handle || !sb) return;
       let dragging = false, startX = 0, startW = 0;
-      handle.addEventListener('mousedown', function(e) {
-        dragging = true; startX = e.clientX; startW = sb.offsetWidth;
+
+      function onStart(clientX) {
+        dragging = true; startX = clientX; startW = sb.offsetWidth;
         handle.classList.add('dragging');
         document.body.style.userSelect = 'none';
         document.body.style.cursor = 'col-resize';
-        e.preventDefault();
-      });
-      document.addEventListener('mousemove', function(e) {
+      }
+      function onMove(clientX) {
         if (!dragging) return;
-        const newW = Math.max(220, Math.min(560, startW + e.clientX - startX));
+        const newW = Math.max(220, Math.min(560, startW + clientX - startX));
         sb.style.width = newW + 'px';
-        if (btn && !_sidebarCollapsed) btn.style.left = newW + 'px';
         map.invalidateSize();
-      });
-      document.addEventListener('mouseup', function() {
+      }
+      function onEnd() {
         if (!dragging) return;
         dragging = false;
         handle.classList.remove('dragging');
         document.body.style.userSelect = '';
         document.body.style.cursor = '';
-      });
-    })();
+      }
 
-    // Position sidebar toggle button correctly on load
-    (function() {
-      const sb  = document.getElementById('sidebar');
-      const btn = document.getElementById('sidebar-toggle');
-      if (sb && btn) btn.style.left = sb.offsetWidth + 'px';
-      window.addEventListener('resize', function() {
-        if (!_sidebarCollapsed && window.innerWidth > 768)
-          btn.style.left = sb.offsetWidth + 'px';
-      });
+      handle.addEventListener('mousedown',  function(e){onStart(e.clientX);e.preventDefault();});
+      document.addEventListener('mousemove', function(e){onMove(e.clientX);});
+      document.addEventListener('mouseup',   onEnd);
+      handle.addEventListener('touchstart',  function(e){if(e.touches[0])onStart(e.touches[0].clientX);e.preventDefault();},{passive:false});
+      document.addEventListener('touchmove', function(e){if(e.touches[0])onMove(e.touches[0].clientX);},{passive:true});
+      document.addEventListener('touchend',  onEnd);
     })();
   </script>
 </body>
