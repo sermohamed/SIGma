@@ -376,8 +376,6 @@
     }
 
     /* ═══════════════ WEBAPP SIDEBAR ═══════════════ */
-    html, body { overflow: hidden; }
-    #webapp-root { display: flex; flex-direction: row; height: 100vh; width: 100vw; overflow: hidden; }
     #sidebar {
       width: 310px; min-width: 240px; max-width: 480px;
       height: 100vh; flex-shrink: 0;
@@ -455,68 +453,120 @@
     #map-wrap { flex: 1; position: relative; overflow: hidden; height: 100vh; }
     #map { position: absolute; inset: 0; width: 100%; height: 100%; }
 
-    /* ── Sidebar collapse toggle — always at right edge of sidebar ── */
-    #sidebar-toggle {
-      position: absolute;
-      top: 50%; right: -22px;
-      transform: translateY(-50%);
-      z-index: 1100; background: #2980b9;
-      color: white; border: none; border-radius: 0 8px 8px 0;
-      width: 22px; padding: 18px 4px; cursor: pointer; font-size: 13px;
-      box-shadow: 2px 0 8px rgba(0,0,0,0.4);
-      transition: background 0.15s;
-      line-height: 1;
+    /* ── Sidebar: drag-only collapse, no button ── */
+    #sidebar {
+      width: 310px; min-width: 0; max-width: 520px;
+      height: 100vh; flex-shrink: 0;
+      background: #2c3e50; color: white;
+      font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px;
+      display: flex; flex-direction: column;
+      border-right: 2px solid #1a252f;
+      box-sizing: border-box; overflow: hidden;
+      position: relative;
     }
-    #sidebar-toggle:hover { background: #3498db; }
-    #sidebar.collapsed #sidebar-toggle { right: -22px; }
-    #sidebar.collapsed #sidebar-toggle::before { content: '▶'; }
-    #sidebar:not(.collapsed) #sidebar-toggle::before { content: '◀'; }
-    /* Drag handle on right edge of sidebar */
+    /* Drag / swipe handle — right edge of sidebar */
     #sidebar-resize-handle {
-      position: absolute; top: 0; right: 0; width: 6px; height: 100%;
-      cursor: col-resize; z-index: 11;
-      background: linear-gradient(to right, transparent, rgba(52,152,219,0.25));
+      position: absolute; top: 0; right: 0; width: 10px; height: 100%;
+      cursor: col-resize; z-index: 12;
+      background: rgba(52,152,219,0.0);
       transition: background 0.2s;
+      touch-action: none; /* critical for pointer events on mobile */
     }
     #sidebar-resize-handle:hover,
-    #sidebar-resize-handle.dragging { background: linear-gradient(to right, transparent, rgba(52,152,219,0.6)); }
-    #sidebar.collapsed { width: 0 !important; min-width: 0 !important; overflow: hidden; border: none; }
-
-    /* ── Mobile responsive — same layout as desktop but scaled ── */
-    @media (max-width: 768px) {
-      #webapp-root { flex-direction: row; overflow-x: auto; min-width: 680px; }
-      html, body { overflow-x: auto; min-width: 680px; }
-      #sidebar { width: 260px !important; min-width: 220px !important; flex-shrink: 0; }
-      #map-wrap { flex: 1; min-width: 300px; }
-      /* Larger touch targets on mobile */
-      .ctrl-btn {
-        width: 36px !important; height: 36px !important;
-        line-height: 36px !important; font-size: 17px !important;
-      }
-      .leaflet-control a {
-        width: 36px !important; height: 36px !important;
-        line-height: 36px !important;
-      }
-      /* Sidebar toggle: bigger touch target */
-      #sidebar-toggle {
-        width: 28px !important;
-        padding: 24px 5px !important;
-        font-size: 15px !important;
-        right: -28px !important;
-      }
-      /* Resize handle: wider touch area */
-      #sidebar-resize-handle { width: 12px !important; }
-      /* Sidebar form inputs: bigger on mobile */
-      .si, .ss { font-size: 14px !important; padding: 7px 10px !important; }
-      .sb { padding: 10px !important; font-size: 13px !important; }
-      .sg-h { font-size: 13px !important; padding: 8px 12px !important; }
-      /* Mobile menu button — hidden (sidebar always visible) */
-      #mobile-menu-btn { display: none !important; }
-      #mobile-overlay  { display: none !important; }
+    #sidebar-resize-handle.dragging {
+      background: rgba(52,152,219,0.35);
     }
+    /* Tiny visual grip dots */
+    #sidebar-resize-handle::after {
+      content: '⋮'; position: absolute; top: 50%; left: 0px;
+      transform: translateY(-50%); color: rgba(180,200,220,0.5);
+      font-size: 18px; pointer-events: none; line-height: 1;
+    }
+    #sidebar.collapsed {
+      width: 0 !important; overflow: hidden; border: none;
+    }
+    /* Thin tab visible when collapsed so user can drag open again */
+    #sidebar.collapsed::after {
+      content: '▶'; position: absolute; right: -18px; top: 50%;
+      transform: translateY(-50%); width: 18px; height: 48px;
+      background: #2980b9; color: white; border-radius: 0 6px 6px 0;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 12px; cursor: pointer; z-index: 1100;
+      box-shadow: 2px 0 8px rgba(0,0,0,0.4);
+    }
+
+    /* ─── ORIENTATION WARNING (portrait on phone) ─── */
+    #orient-warn {
+      display: none; position: fixed; inset: 0; z-index: 99999;
+      background: #1e2d3d; color: #ecf0f1;
+      flex-direction: column; align-items: center; justify-content: center;
+      text-align: center; padding: 30px; font-family: 'Segoe UI', Arial, sans-serif;
+    }
+    #orient-warn.visible { display: flex; }
+    #orient-warn svg { margin-bottom: 20px; animation: _rotHint 1.5s infinite alternate ease-in-out; }
+    @keyframes _rotHint { from { transform: rotate(0deg); } to { transform: rotate(15deg); } }
+    #orient-warn h2 { font-size: 18px; margin: 0 0 10px; }
+    #orient-warn p  { font-size: 13px; color: #7f8c8d; margin: 0 0 20px; }
+    #orient-warn button {
+      background: #2980b9; color: white; border: none; border-radius: 8px;
+      padding: 12px 28px; font-size: 15px; font-weight: bold; cursor: pointer;
+    }
+
+    /* ── Desktop layout ── */
+    html, body { height: 100%; margin: 0; overflow: hidden; }
+    #webapp-root { display: flex; flex-direction: row; height: 100vh; width: 100vw; overflow: hidden; }
+    #map-wrap { flex: 1; position: relative; overflow: hidden; height: 100vh; }
+    #map { position: absolute; inset: 0; width: 100%; height: 100%; }
+
+    /* ── Mobile: sidebar as slide-over overlay ── */
+    @media (max-width: 768px) {
+      html, body { overflow: hidden; }
+      #webapp-root { flex-direction: row; width: 100vw; height: 100vh; overflow: hidden; }
+
+      /* Sidebar slides in as overlay */
+      #sidebar {
+        position: fixed; top: 0; left: 0; bottom: 0; z-index: 2000;
+        width: 80vw !important; max-width: 320px !important; min-width: 0 !important;
+        transform: translateX(-100%);
+        transition: transform 0.28s cubic-bezier(.4,0,.2,1);
+        box-shadow: 4px 0 24px rgba(0,0,0,0.5);
+        overflow: hidden;
+      }
+      #sidebar.mobile-open { transform: translateX(0); }
+      #sidebar-body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+
+      /* Map takes full width always */
+      #map-wrap { width: 100vw !important; flex: 1; }
+
+      /* Drag handle bigger on mobile */
+      #sidebar-resize-handle { width: 20px !important; }
+      #sidebar-resize-handle::after { content: ''; } /* hide grip on mobile */
+
+      /* Mobile scrim */
+      #mobile-scrim {
+        display: none; position: fixed; inset: 0;
+        background: rgba(0,0,0,0.45); z-index: 1999;
+      }
+      #sidebar.mobile-open ~ #mobile-scrim,
+      #mobile-scrim.visible { display: block; }
+
+      /* All buttons: 48px min touch target */
+      .ctrl-btn, .leaflet-control a {
+        width: 44px !important; height: 44px !important;
+        line-height: 44px !important; font-size: 18px !important;
+      }
+      .sb { min-height: 48px !important; padding: 12px !important; font-size: 14px !important; }
+      .si, .ss { font-size: 15px !important; padding: 10px !important; min-height: 44px !important; }
+      .sg-h { font-size: 14px !important; padding: 10px 12px !important; }
+      .s-tab { padding: 12px 4px !important; font-size: 12px !important; }
+      .tp-btn { min-height: 44px !important; padding: 10px !important; font-size: 13px !important; }
+
+      /* Map tools panel bigger on mobile */
+      #map-tools-panel .map-tool-btn { min-height: 48px !important; padding: 12px !important; }
+    }
+
     @media (min-width: 769px) {
-      #mobile-menu-btn { display: none !important; }
-      #mobile-overlay  { display: none !important; }
+      #mobile-scrim { display: none !important; }
     }
     /* ── Metric converter module ── */
     .mc-section { border-top: 1px solid #2c3e50; margin-top: 6px; overflow: hidden; }
@@ -553,15 +603,25 @@
 </head>
 <body>
 <!-- Mobile menu button (only visible on small screens) -->
-<button id="mobile-menu-btn" onclick="toggleMobileSidebar()" style="display:none">☰</button>
-<!-- Mobile overlay -->
-<div id="mobile-overlay" onclick="toggleMobileSidebar()"></div>
+<!-- Orientation warning (portrait on phone) -->
+<div id="orient-warn">
+  <svg width="80" height="80" viewBox="0 0 80 80" fill="none">
+    <rect x="10" y="5" width="28" height="50" rx="5" stroke="#ecf0f1" stroke-width="3"/>
+    <rect x="15" y="25" width="50" height="28" rx="5" stroke="#3498db" stroke-width="3"/>
+    <path d="M55 18 L62 25 L55 32" stroke="#3498db" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+  </svg>
+  <h2>Tournez votre appareil</h2>
+  <p>Pour une expérience optimale, utilisez l'application en mode <strong>paysage</strong> (horizontal).</p>
+  <button onclick="document.getElementById('orient-warn').classList.remove('visible')">OK — Continuer quand même</button>
+</div>
+
+<!-- Mobile scrim (tap outside sidebar to close) -->
+<div id="mobile-scrim" onclick="closeMobileSidebar()"></div>
 
 <div id="webapp-root">
   <!-- ══════════════════════ SIDEBAR ══════════════════════ -->
   <div id="sidebar">
-    <div id="sidebar-resize-handle" title="Glissez pour redimensionner le panneau"></div>
-    <button id="sidebar-toggle" onclick="toggleDesktopSidebar()" title="Afficher/Masquer le panneau"></button>
+    <div id="sidebar-resize-handle" title="Glissez pour redimensionner • Faites glisser à gauche pour masquer"></div>
     <div id="sidebar-tabs">
       <button class="s-tab active" onclick="sbTab('conv')">🗺 Convertisseur</button>
       <button class="s-tab" onclick="sbTab('print')">🖨 Impression</button>
@@ -606,14 +666,15 @@
         <button class="sb blue" onclick="sbConvert()">🔄 Convertir &amp; Placer sur carte</button>
         <div id="sb-result" class="sresult">Saisissez des coordonnées ci-dessus…</div>
         <button class="sb teal" id="sb-gmaps" style="display:none" onclick="sbOpenMaps()">🌐 Ouvrir dans Google Maps</button>
-          </div><!-- /cc-body -->
-        </div><!-- /coordinate converter sg -->
-        <div class="sg" style="margin-top:10px">
-          <div class="sg-h">📜 Historique</div>
-          <div class="sg-b" id="sb-history" style="max-height:180px;overflow-y:auto;font-size:11px">
-            <span style="color:#7f8c8d">Aucune conversion encore.</span>
+        <!-- Historique inside the converter (collapses with it) -->
+        <div style="margin-top:8px">
+          <div style="font-size:11px;font-weight:bold;color:#7f8c8d;margin-bottom:4px;text-transform:uppercase;letter-spacing:0.5px">📜 Historique</div>
+          <div class="sg-b" id="sb-history" style="max-height:150px;overflow-y:auto;font-size:11px;background:#1e2d3d;border-radius:4px;border:1px solid #2c3e50;padding:6px 8px">
+            <span style="color:#4a6278">Aucune conversion encore.</span>
           </div>
         </div>
+          </div><!-- /cc-body -->
+        </div><!-- /coordinate converter sg -->
 
         <!-- ═══ CONVERTISSEURS MÉTRIQUES ═══ -->
         <div class="sg" style="margin-top:10px">
@@ -2072,30 +2133,44 @@
           if (!zwActive && zwRect) { map.removeLayer(zwRect); zwRect=null; }
         });
 
-        // Use container-level DOM events so we don't interfere with Leaflet Draw handlers
+        // Pointer events: works for mouse, touch and stylus
         const mc = map.getContainer();
-        mc.addEventListener('mousedown', function(ev) {
+        let _zwPointerId = null;
+
+        mc.addEventListener('pointerdown', function(ev) {
           if (!zwActive) return;
-          const latlng = map.containerPointToLatLng(L.point(ev.layerX||ev.offsetX, ev.layerY||ev.offsetY));
-          zwStart = latlng;
+          // Get position relative to map container
+          const rect = mc.getBoundingClientRect();
+          const px = ev.clientX - rect.left;
+          const py = ev.clientY - rect.top;
+          zwStart = map.containerPointToLatLng(L.point(px, py));
           if (zwRect) map.removeLayer(zwRect);
-          zwRect = L.rectangle([zwStart,zwStart],{color:'#3498db',weight:2,fillOpacity:0.1,dashArray:'6,4'}).addTo(map);
-          ev.stopPropagation();
-        });
-        mc.addEventListener('mousemove', function(ev) {
+          zwRect = L.rectangle([zwStart,zwStart],{color:'#3498db',weight:2,fillOpacity:0.12,dashArray:'6,4'}).addTo(map);
+          _zwPointerId = ev.pointerId;
+          try { mc.setPointerCapture(ev.pointerId); } catch(e) {}
+          ev.preventDefault(); ev.stopPropagation();
+        }, {passive:false});
+
+        mc.addEventListener('pointermove', function(ev) {
           if (!zwActive || !zwStart || !zwRect) return;
-          const latlng = map.containerPointToLatLng(L.point(ev.layerX||ev.offsetX, ev.layerY||ev.offsetY));
+          if (_zwPointerId !== null && ev.pointerId !== _zwPointerId) return;
+          const rect = mc.getBoundingClientRect();
+          const latlng = map.containerPointToLatLng(L.point(ev.clientX - rect.left, ev.clientY - rect.top));
           zwRect.setBounds(L.latLngBounds(zwStart, latlng));
-        });
-        mc.addEventListener('mouseup', function(ev) {
+          ev.preventDefault();
+        }, {passive:false});
+
+        mc.addEventListener('pointerup', function(ev) {
           if (!zwActive || !zwStart) return;
-          const latlng = map.containerPointToLatLng(L.point(ev.layerX||ev.offsetX, ev.layerY||ev.offsetY));
+          const rect   = mc.getBoundingClientRect();
+          const latlng = map.containerPointToLatLng(L.point(ev.clientX - rect.left, ev.clientY - rect.top));
           const bounds = L.latLngBounds(zwStart, latlng);
           if (zwRect) { map.removeLayer(zwRect); zwRect=null; }
-          zwStart=null; zwActive=false; zwBtn.classList.remove('active');
-          map.dragging.enable(); map.getContainer().style.cursor='';
+          zwStart=null; zwActive=false; _zwPointerId=null;
+          zwBtn.classList.remove('active');
+          map.dragging.enable(); mc.style.cursor='';
           if (bounds.isValid() && bounds.getNorthEast().distanceTo(bounds.getSouthWest())>10)
-            map.fitBounds(bounds);
+            map.fitBounds(bounds, {padding:[4,4]});
         });
 
         L.DomEvent.disableClickPropagation(container);
@@ -6467,47 +6542,141 @@
     // ─── Sidebar toggle (desktop hide/show + mobile) ──────────────────────────
     let _sidebarCollapsed = false;
 
-    function toggleDesktopSidebar() {
-      const sb = document.getElementById('sidebar');
-      _sidebarCollapsed = !_sidebarCollapsed;
-      sb.classList.toggle('collapsed', _sidebarCollapsed);
-      setTimeout(() => map.invalidateSize(), 280);
+    // ════════════════════════════════════════════════════════════════════
+    // SIDEBAR — drag/swipe to open/close (NO button)
+    // ════════════════════════════════════════════════════════════════════
+    
+    const COLLAPSE_THRESHOLD = 100; // px — collapse if dragged narrower than this
+
+    (function initSidebarDrag() {
+      const sb     = document.getElementById('sidebar');
+      const handle = document.getElementById('sidebar-resize-handle');
+      const scrim  = document.getElementById('mobile-scrim');
+      if (!sb || !handle) return;
+
+      let dragging=false, startX=0, startW=0;
+
+      function isMobile() { return window.innerWidth <= 768; }
+
+      function collapse() {
+        _sidebarCollapsed = true;
+        sb.style.width = '';
+        sb.classList.add('collapsed');
+        if (isMobile()) {
+          sb.classList.remove('mobile-open');
+          if (scrim) scrim.classList.remove('visible');
+        }
+        setTimeout(()=>map.invalidateSize(),300);
+      }
+
+      function expand(targetW) {
+        _sidebarCollapsed = false;
+        sb.classList.remove('collapsed');
+        const w = targetW || (isMobile() ? Math.min(window.innerWidth*0.8,320) : 310);
+        sb.style.width = w+'px';
+        if (isMobile()) {
+          sb.classList.add('mobile-open');
+          if (scrim) scrim.classList.add('visible');
+        }
+        setTimeout(()=>map.invalidateSize(),300);
+      }
+
+      // Pointer events on handle (works mouse + touch + pen)
+      handle.addEventListener('pointerdown', function(e) {
+        if (!isMobile() || !_sidebarCollapsed) { // desktop drag or mobile expand
+          dragging=true; startX=e.clientX; startW=sb.offsetWidth||310;
+          handle.classList.add('dragging');
+          handle.setPointerCapture(e.pointerId);
+          document.body.style.userSelect='none';
+          e.preventDefault();
+        }
+      }, {passive:false});
+
+      handle.addEventListener('pointermove', function(e) {
+        if (!dragging) return;
+        const delta = e.clientX - startX;
+        const newW  = Math.max(0, startW + delta);
+        if (newW < COLLAPSE_THRESHOLD) {
+          sb.style.width = '0px';
+        } else {
+          sb.style.width = Math.min(520, newW)+'px';
+        }
+        map.invalidateSize();
+        e.preventDefault();
+      }, {passive:false});
+
+      handle.addEventListener('pointerup', function(e) {
+        if (!dragging) return;
+        dragging=false;
+        handle.classList.remove('dragging');
+        document.body.style.userSelect='';
+        const finalW = sb.offsetWidth;
+        if (finalW < COLLAPSE_THRESHOLD) { collapse(); }
+        else { _sidebarCollapsed=false; sb.classList.remove('collapsed'); }
+        map.invalidateSize();
+      });
+
+      // Mobile swipe on map area to open/close sidebar
+      if (isMobile() || true) {
+        let swipeStartX=0, swipeStartY=0;
+        const mapWrap = document.getElementById('map-wrap');
+        if (mapWrap) {
+          mapWrap.addEventListener('pointerdown', function(e) {
+            swipeStartX=e.clientX; swipeStartY=e.clientY;
+          }, {passive:true});
+          mapWrap.addEventListener('pointerup', function(e) {
+            const dx=e.clientX-swipeStartX, dy=e.clientY-swipeStartY;
+            if (Math.abs(dx)<30||Math.abs(dy)>40) return; // not a horizontal swipe
+            if (!isMobile()) return;
+            if (dx>30 && _sidebarCollapsed) expand();   // swipe right → open
+            if (dx<-30 && !_sidebarCollapsed) collapse(); // swipe left → close
+          }, {passive:true});
+        }
+      }
+
+      // Collapsed tab click (::after pseudo-element can't have click — add real overlay)
+      sb.addEventListener('click', function(e) {
+        if (_sidebarCollapsed && e.offsetX > (sb.offsetWidth-30)) expand();
+      });
+    })();
+
+    function closeMobileSidebar() {
+      const sb    = document.getElementById('sidebar');
+      const scrim = document.getElementById('mobile-scrim');
+      _sidebarCollapsed = true;
+      sb.classList.add('collapsed');
+      sb.classList.remove('mobile-open');
+      if (scrim) scrim.classList.remove('visible');
+      setTimeout(()=>map.invalidateSize(),300);
     }
 
-    // ─── Sidebar drag-resize (mouse + touch) ──────────────────────────────────
-    (function initSidebarResize() {
-      const handle = document.getElementById('sidebar-resize-handle');
-      const sb     = document.getElementById('sidebar');
-      if (!handle || !sb) return;
-      let dragging = false, startX = 0, startW = 0;
+    // Stub kept for any legacy calls
+    function toggleDesktopSidebar() {
+      if (_sidebarCollapsed) {
+        const sb=document.getElementById('sidebar');
+        _sidebarCollapsed=false;
+        sb.classList.remove('collapsed');
+        sb.style.width='310px';
+        if (window.innerWidth<=768) { sb.classList.add('mobile-open'); document.getElementById('mobile-scrim')?.classList.add('visible'); }
+        setTimeout(()=>map.invalidateSize(),300);
+      } else { closeMobileSidebar(); }
+    }
 
-      function onStart(clientX) {
-        dragging = true; startX = clientX; startW = sb.offsetWidth;
-        handle.classList.add('dragging');
-        document.body.style.userSelect = 'none';
-        document.body.style.cursor = 'col-resize';
+    // ── Orientation warning ────────────────────────────────────────────────────
+    function _checkOrientation() {
+      const warn = document.getElementById('orient-warn');
+      if (!warn) return;
+      const isMobileDevice = window.innerWidth <= 768 || 'ontouchstart' in window;
+      const isPortrait = window.innerHeight > window.innerWidth;
+      if (isMobileDevice && isPortrait) {
+        warn.classList.add('visible');
+      } else {
+        warn.classList.remove('visible');
       }
-      function onMove(clientX) {
-        if (!dragging) return;
-        const newW = Math.max(220, Math.min(560, startW + clientX - startX));
-        sb.style.width = newW + 'px';
-        map.invalidateSize();
-      }
-      function onEnd() {
-        if (!dragging) return;
-        dragging = false;
-        handle.classList.remove('dragging');
-        document.body.style.userSelect = '';
-        document.body.style.cursor = '';
-      }
-
-      handle.addEventListener('mousedown',  function(e){onStart(e.clientX);e.preventDefault();});
-      document.addEventListener('mousemove', function(e){onMove(e.clientX);});
-      document.addEventListener('mouseup',   onEnd);
-      handle.addEventListener('touchstart',  function(e){if(e.touches[0])onStart(e.touches[0].clientX);e.preventDefault();},{passive:false});
-      document.addEventListener('touchmove', function(e){if(e.touches[0])onMove(e.touches[0].clientX);},{passive:true});
-      document.addEventListener('touchend',  onEnd);
-    })();
+    }
+    window.addEventListener('orientationchange', ()=>setTimeout(_checkOrientation,200));
+    window.addEventListener('resize', _checkOrientation);
+    setTimeout(_checkOrientation, 300); // check on load
   </script>
 </body>
 </html>
