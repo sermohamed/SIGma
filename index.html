@@ -518,6 +518,14 @@
     #map-wrap { flex: 1; position: relative; overflow: hidden; height: 100vh; }
     #map { position: absolute; inset: 0; width: 100%; height: 100%; }
 
+    /* ── Mobile scrim (always defined globally) ── */
+    #mobile-scrim {
+      display: none; position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45); z-index: 1999;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #mobile-scrim.visible { display: block; }
+
     /* ── Mobile: sidebar as slide-over overlay ── */
     @media (max-width: 768px) {
       html, body { overflow: hidden; }
@@ -535,20 +543,10 @@
       #sidebar.mobile-open { transform: translateX(0); }
       #sidebar-body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
 
-      /* Map takes full width always */
-      #map-wrap { width: 100vw !important; flex: 1; }
-
-      /* Drag handle bigger on mobile */
-      #sidebar-resize-handle { width: 20px !important; }
-      #sidebar-resize-handle::after { content: ''; } /* hide grip on mobile */
-
-      /* Mobile scrim */
-      #mobile-scrim {
-        display: none; position: fixed; inset: 0;
-        background: rgba(0,0,0,0.45); z-index: 1999;
-      }
-      #sidebar.mobile-open ~ #mobile-scrim,
-      #mobile-scrim.visible { display: block; }
+      #sidebar-toggle { display: none; } /* hide tab on mobile, use hamburger */
+      #mob-ham { display: flex !important; }
+      /* Map takes full screen */
+      #map-wrap { width: 100vw; }
 
       /* All buttons: 48px min touch target */
       .ctrl-btn, .leaflet-control a {
@@ -618,10 +616,30 @@
 <!-- Mobile scrim (tap outside sidebar to close) -->
 <div id="mobile-scrim" onclick="closeMobileSidebar()"></div>
 
+<!-- Mobile hamburger button (fixed, top-left, only visible on phones) -->
+<button id="mob-ham" aria-label="Ouvrir le panneau"
+  style="display:none;position:fixed;top:10px;left:10px;z-index:2001;
+         width:44px;height:44px;background:#2c3e50;color:white;border:none;
+         border-radius:8px;font-size:22px;cursor:pointer;
+         align-items:center;justify-content:center;
+         box-shadow:0 2px 8px rgba(0,0,0,0.45);
+         -webkit-tap-highlight-color:transparent;"
+  onclick="toggleDesktopSidebar()">☰</button>
+<div id="mob-overlay" onclick="closeMobileSidebar()"
+  style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1999;"></div>
+
 <div id="webapp-root">
   <!-- ══════════════════════ SIDEBAR ══════════════════════ -->
   <div id="sidebar">
-    <div id="sidebar-resize-handle" title="Glissez pour redimensionner • Faites glisser à gauche pour masquer"></div>
+    <div id="sidebar-resize-handle" title="Glissez pour redimensionner"></div>
+    <!-- Desktop toggle tab (hidden on mobile, replaced by hamburger) -->
+    <button id="sidebar-toggle" onclick="toggleDesktopSidebar()"
+      title="Masquer/Afficher le panneau"
+      style="position:absolute;top:50%;right:-20px;transform:translateY(-50%);
+             width:20px;padding:16px 3px;z-index:1100;
+             background:#2980b9;color:white;border:none;border-radius:0 8px 8px 0;
+             cursor:pointer;font-size:13px;line-height:1;
+             box-shadow:2px 0 6px rgba(0,0,0,0.35);">◀</button>
     <div id="sidebar-tabs">
       <button class="s-tab active" onclick="sbTab('conv')">🗺 Convertisseur</button>
       <button class="s-tab" onclick="sbTab('print')">🖨 Impression</button>
@@ -6643,23 +6661,42 @@
     function closeMobileSidebar() {
       const sb    = document.getElementById('sidebar');
       const scrim = document.getElementById('mobile-scrim');
+      const ov    = document.getElementById('mob-overlay');
       _sidebarCollapsed = true;
       sb.classList.add('collapsed');
       sb.classList.remove('mobile-open');
       if (scrim) scrim.classList.remove('visible');
+      if (ov) ov.style.display = 'none';
       setTimeout(()=>map.invalidateSize(),300);
     }
 
-    // Stub kept for any legacy calls
     function toggleDesktopSidebar() {
+      const sb    = document.getElementById('sidebar');
+      const btn   = document.getElementById('sidebar-toggle');
+      const scrim = document.getElementById('mobile-scrim');
+      const ov    = document.getElementById('mob-overlay');
+      const isMob = window.innerWidth <= 768;
       if (_sidebarCollapsed) {
-        const sb=document.getElementById('sidebar');
-        _sidebarCollapsed=false;
+        _sidebarCollapsed = false;
         sb.classList.remove('collapsed');
-        sb.style.width='310px';
-        if (window.innerWidth<=768) { sb.classList.add('mobile-open'); document.getElementById('mobile-scrim')?.classList.add('visible'); }
-        setTimeout(()=>map.invalidateSize(),300);
-      } else { closeMobileSidebar(); }
+        if (isMob) {
+          sb.classList.add('mobile-open');
+          if (scrim) scrim.classList.add('visible');
+          if (ov) ov.style.display = 'block';
+        } else {
+          sb.style.width = '310px';
+          setTimeout(()=>map.invalidateSize(), 280);
+        }
+        if (btn) btn.textContent = '◀';
+      } else {
+        _sidebarCollapsed = true;
+        sb.classList.add('collapsed');
+        sb.classList.remove('mobile-open');
+        if (scrim) scrim.classList.remove('visible');
+        if (ov) ov.style.display = 'none';
+        setTimeout(()=>map.invalidateSize(), 280);
+        if (btn) btn.textContent = '▶';
+      }
     }
 
     // ── Orientation warning ────────────────────────────────────────────────────
