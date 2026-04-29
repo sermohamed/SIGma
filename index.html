@@ -518,7 +518,32 @@
     #map-wrap { flex: 1; position: relative; overflow: hidden; height: 100vh; }
     #map { position: absolute; inset: 0; width: 100%; height: 100%; }
 
-    /* ── Mobile scrim (always defined globally) ── */
+    /* ── Sidebar reopen handle (always visible on left edge, desktop + mobile) ── */
+    #sidebar-reopen-tab {
+      position: fixed; top: 50%; left: 0;
+      transform: translateY(-50%);
+      z-index: 1090; /* below sidebar (2000), but above map */
+      width: 20px; height: 56px;
+      background: #2980b9; color: white;
+      border-radius: 0 8px 8px 0;
+      display: none; /* shown only when sidebar is collapsed */
+      align-items: center; justify-content: center;
+      cursor: pointer; font-size: 14px; line-height: 1;
+      box-shadow: 2px 0 8px rgba(0,0,0,0.4);
+      user-select: none; -webkit-tap-highlight-color: transparent;
+      transition: background 0.15s;
+    }
+    #sidebar-reopen-tab:hover, #sidebar-reopen-tab:active { background: #3498db; }
+    /* Show reopen tab only when sidebar is hidden */
+    #sidebar.collapsed ~ * #sidebar-reopen-tab { display: flex; }
+    body.sidebar-collapsed #sidebar-reopen-tab { display: flex; }
+
+    /* ── Touch action rules (critical for mobile gestures) ── */
+    #map { touch-action: none; }
+    #sidebar-body { touch-action: pan-y; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
+    body.sidebar-mobile-open #map { pointer-events: none !important; }
+    body.edit-mode-active .leaflet-control-zoom { pointer-events: auto !important; }
+
     #mobile-scrim {
       display: none; position: fixed; inset: 0;
       background: rgba(0,0,0,0.45); z-index: 1999;
@@ -627,6 +652,9 @@
   onclick="toggleDesktopSidebar()">☰</button>
 <div id="mob-overlay" onclick="closeMobileSidebar()"
   style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.4);z-index:1999;"></div>
+
+<!-- Sidebar reopen handle (visible when sidebar is hidden) -->
+<div id="sidebar-reopen-tab" onclick="toggleDesktopSidebar()" title="Ouvrir le panneau">▶</div>
 
 <div id="webapp-root">
   <!-- ══════════════════════ SIDEBAR ══════════════════════ -->
@@ -2142,32 +2170,54 @@
         zwBtn.title = 'Zoom fenêtre — dessinez un rectangle sur la carte pour zoomer dedans';
         zwBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="2" width="9" height="9" rx="1" stroke-dasharray="3,2"/><line x1="10" y1="10" x2="14" y2="14"/><circle cx="6.5" cy="6.5" r="3"/><line x1="8.7" y1="8.7" x2="10.5" y2="10.5"/></svg>';
         let zwActive = false, zwStart = null, zwRect = null;
+        let _zwPointerId = null;
+
+        // Disable/enable ALL map touch interactions (mobile requires this)
+        function _zwDisableMap() {
+          map.dragging.disable(); map.touchZoom.disable();
+          map.doubleClickZoom.disable(); map.scrollWheelZoom.disable();
+          map.boxZoom.disable(); map.keyboard.disable();
+          if (map.tap) map.tap.disable();
+          map.getContainer().style.cursor = 'crosshair';
+          map.getContainer().style.touchAction = 'none';
+        }
+        function _zwEnableMap() {
+          map.dragging.enable(); map.touchZoom.enable();
+          map.doubleClickZoom.enable(); map.scrollWheelZoom.enable();
+          map.boxZoom.enable(); map.keyboard.enable();
+          if (map.tap) map.tap.enable();
+          map.getContainer().style.cursor = '';
+          map.getContainer().style.touchAction = '';
+        }
+
         L.DomEvent.on(zwBtn, 'click', function(e) {
           L.DomEvent.preventDefault(e);
           zwActive = !zwActive;
           zwBtn.classList.toggle('active', zwActive);
-          map.dragging[zwActive?'disable':'enable']();
-          map.getContainer().style.cursor = zwActive ? 'crosshair' : '';
-          if (!zwActive && zwRect) { map.removeLayer(zwRect); zwRect=null; }
+          if (zwActive) {
+            _zwDisableMap();
+            _showMapBanner('⬚ Zoom fenêtre — tracez un rectangle avec le doigt ou la souris');
+          } else {
+            _zwEnableMap();
+            _hideMapBanner();
+            if (zwRect) { map.removeLayer(zwRect); zwRect = null; }
+          }
         });
 
-        // Pointer events: works for mouse, touch and stylus
         const mc = map.getContainer();
-        let _zwPointerId = null;
 
         mc.addEventListener('pointerdown', function(ev) {
           if (!zwActive) return;
-          // Get position relative to map container
           const rect = mc.getBoundingClientRect();
-          const px = ev.clientX - rect.left;
-          const py = ev.clientY - rect.top;
-          zwStart = map.containerPointToLatLng(L.point(px, py));
+          zwStart = map.containerPointToLatLng(L.point(ev.clientX - rect.left, ev.clientY - rect.top));
           if (zwRect) map.removeLayer(zwRect);
-          zwRect = L.rectangle([zwStart,zwStart],{color:'#3498db',weight:2,fillOpacity:0.12,dashArray:'6,4'}).addTo(map);
+          zwRect = L.rectangle([zwStart, zwStart], {
+            color:'#3498db', weight:2, fillOpacity:0.12, dashArray:'6,4'
+          }).addTo(map);
           _zwPointerId = ev.pointerId;
           try { mc.setPointerCapture(ev.pointerId); } catch(e) {}
           ev.preventDefault(); ev.stopPropagation();
-        }, {passive:false});
+        }, {passive: false});
 
         mc.addEventListener('pointermove', function(ev) {
           if (!zwActive || !zwStart || !zwRect) return;
@@ -2176,19 +2226,28 @@
           const latlng = map.containerPointToLatLng(L.point(ev.clientX - rect.left, ev.clientY - rect.top));
           zwRect.setBounds(L.latLngBounds(zwStart, latlng));
           ev.preventDefault();
-        }, {passive:false});
+        }, {passive: false});
 
         mc.addEventListener('pointerup', function(ev) {
           if (!zwActive || !zwStart) return;
           const rect   = mc.getBoundingClientRect();
           const latlng = map.containerPointToLatLng(L.point(ev.clientX - rect.left, ev.clientY - rect.top));
           const bounds = L.latLngBounds(zwStart, latlng);
-          if (zwRect) { map.removeLayer(zwRect); zwRect=null; }
-          zwStart=null; zwActive=false; _zwPointerId=null;
+          if (zwRect) { map.removeLayer(zwRect); zwRect = null; }
+          zwStart = null; zwActive = false; _zwPointerId = null;
           zwBtn.classList.remove('active');
-          map.dragging.enable(); mc.style.cursor='';
-          if (bounds.isValid() && bounds.getNorthEast().distanceTo(bounds.getSouthWest())>10)
-            map.fitBounds(bounds, {padding:[4,4]});
+          _zwEnableMap();
+          _hideMapBanner();
+          if (bounds.isValid() && bounds.getNorthEast().distanceTo(bounds.getSouthWest()) > 10)
+            map.fitBounds(bounds, {padding: [4, 4]});
+        });
+
+        mc.addEventListener('pointercancel', function() {
+          if (!zwActive) return;
+          if (zwRect) { map.removeLayer(zwRect); zwRect = null; }
+          zwStart = null; zwActive = false; _zwPointerId = null;
+          zwBtn.classList.remove('active');
+          _zwEnableMap(); _hideMapBanner();
         });
 
         L.DomEvent.disableClickPropagation(container);
@@ -4653,16 +4712,76 @@
 
     map.on(L.Draw.Event.EDITSTART, function() {
       _editModeActive = true;
+      document.body.classList.add('edit-mode-active');
       _vtxLabelGroup.clearLayers();
       _refreshVtxLabels();
       clearInterval(_vtxLabelTimer);
       _vtxLabelTimer = setInterval(_refreshVtxLabels, 100);
+      // Show floating Apply/Cancel bar (especially useful on mobile where Leaflet Draw bar is hard to tap)
+      _showEditActionBar();
     });
     map.on(L.Draw.Event.EDITSTOP, function() {
       _editModeActive = false;
+      document.body.classList.remove('edit-mode-active');
       clearInterval(_vtxLabelTimer);
       _vtxLabelGroup.clearLayers();
+      _hideEditActionBar();
     });
+
+    // ── Floating Edit Action Bar (Apply / Cancel) ─────────────────────────
+    let _editActionBar = null;
+    function _showEditActionBar() {
+      _hideEditActionBar();
+      const bar = document.createElement('div');
+      bar.id = 'edit-action-bar';
+      bar.style.cssText = `
+        position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+        z-index: 5500; display: flex; gap: 12px;
+        background: rgba(30,45,61,0.97); padding: 10px 14px;
+        border-radius: 14px; border: 1px solid #3d5166;
+        box-shadow: 0 6px 24px rgba(0,0,0,0.6);
+        font-family: 'Segoe UI', Arial, sans-serif;
+      `;
+      bar.innerHTML = `
+        <button id="edit-bar-cancel" style="
+          background:#7f8c8d;color:white;border:none;border-radius:8px;
+          padding:10px 18px;font-size:14px;font-weight:bold;cursor:pointer;
+          min-height:44px;-webkit-tap-highlight-color:transparent;">✕ Annuler</button>
+        <button id="edit-bar-apply" style="
+          background:#27ae60;color:white;border:none;border-radius:8px;
+          padding:10px 22px;font-size:14px;font-weight:bold;cursor:pointer;
+          min-height:44px;-webkit-tap-highlight-color:transparent;">✓ Valider</button>
+      `;
+      document.body.appendChild(bar);
+      _editActionBar = bar;
+
+      bar.querySelector('#edit-bar-apply').onclick = function(e) {
+        e.preventDefault(); e.stopPropagation();
+        try {
+          const et = drawControl._toolbars.edit;
+          if (et && et._activeMode && et._activeMode.handler) {
+            et._activeMode.handler.save();
+            et._activeMode.handler.disable();
+          }
+        } catch(err) { console.warn('Edit save failed:', err); }
+      };
+      bar.querySelector('#edit-bar-cancel').onclick = function(e) {
+        e.preventDefault(); e.stopPropagation();
+        try {
+          const et = drawControl._toolbars.edit;
+          if (et && et._activeMode && et._activeMode.handler) {
+            et._activeMode.handler.revertLayers();
+            et._activeMode.handler.disable();
+          }
+        } catch(err) { console.warn('Edit cancel failed:', err); }
+      };
+    }
+    function _hideEditActionBar() {
+      if (_editActionBar && _editActionBar.parentNode) {
+        _editActionBar.parentNode.removeChild(_editActionBar);
+      }
+      _editActionBar = null;
+    }
 
     function _refreshVtxLabels() {
       _vtxLabelGroup.clearLayers();
@@ -6658,6 +6777,12 @@
       });
     })();
 
+    function _sbSyncReopenTab(collapsed) {
+      const tab = document.getElementById('sidebar-reopen-tab');
+      if (!tab) return;
+      tab.style.display = collapsed ? 'flex' : 'none';
+    }
+
     function closeMobileSidebar() {
       const sb    = document.getElementById('sidebar');
       const scrim = document.getElementById('mobile-scrim');
@@ -6665,9 +6790,12 @@
       _sidebarCollapsed = true;
       sb.classList.add('collapsed');
       sb.classList.remove('mobile-open');
+      document.body.classList.add('sidebar-collapsed');
+      document.body.classList.remove('sidebar-mobile-open');
       if (scrim) scrim.classList.remove('visible');
       if (ov) ov.style.display = 'none';
-      setTimeout(()=>map.invalidateSize(),300);
+      _sbSyncReopenTab(true);
+      setTimeout(()=>{ try{map.invalidateSize();}catch(e){} }, 300);
     }
 
     function toggleDesktopSidebar() {
@@ -6677,27 +6805,55 @@
       const ov    = document.getElementById('mob-overlay');
       const isMob = window.innerWidth <= 768;
       if (_sidebarCollapsed) {
+        // OPEN
         _sidebarCollapsed = false;
         sb.classList.remove('collapsed');
+        document.body.classList.remove('sidebar-collapsed');
+        _sbSyncReopenTab(false);
         if (isMob) {
           sb.classList.add('mobile-open');
+          document.body.classList.add('sidebar-mobile-open');
           if (scrim) scrim.classList.add('visible');
           if (ov) ov.style.display = 'block';
         } else {
           sb.style.width = '310px';
-          setTimeout(()=>map.invalidateSize(), 280);
+          setTimeout(()=>{ try{map.invalidateSize();}catch(e){} }, 280);
         }
         if (btn) btn.textContent = '◀';
       } else {
+        // CLOSE
         _sidebarCollapsed = true;
         sb.classList.add('collapsed');
         sb.classList.remove('mobile-open');
+        document.body.classList.add('sidebar-collapsed');
+        document.body.classList.remove('sidebar-mobile-open');
+        _sbSyncReopenTab(true);
         if (scrim) scrim.classList.remove('visible');
         if (ov) ov.style.display = 'none';
-        setTimeout(()=>map.invalidateSize(), 280);
+        setTimeout(()=>{ try{map.invalidateSize();}catch(e){} }, 280);
         if (btn) btn.textContent = '▶';
       }
     }
+
+    // ── Swipe-right from left edge to open sidebar (mobile) ─────────────────
+    (function() {
+      let sw = {x: 0, y: 0, t: 0};
+      document.addEventListener('touchstart', function(e) {
+        const t = e.touches[0];
+        sw.x = t.clientX; sw.y = t.clientY; sw.t = Date.now();
+      }, {passive: true});
+      document.addEventListener('touchend', function(e) {
+        if (window.innerWidth > 768 || !_sidebarCollapsed) return;
+        const t  = e.changedTouches[0];
+        const dx = t.clientX - sw.x;
+        const dy = Math.abs(t.clientY - sw.y);
+        const dt = Date.now() - sw.t;
+        // Swipe right: start ≤ 60px from left edge, horizontal, fast
+        if (sw.x <= 60 && dx > 45 && dy < 80 && dt < 500) {
+          toggleDesktopSidebar();
+        }
+      }, {passive: true});
+    })();
 
     // ── Orientation warning ────────────────────────────────────────────────────
     function _checkOrientation() {
