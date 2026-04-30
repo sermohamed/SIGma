@@ -378,7 +378,7 @@
     /* ═══════════════ WEBAPP SIDEBAR ═══════════════ */
     #sidebar {
       width: 310px; min-width: 240px; max-width: 480px;
-      height: 100vh; flex-shrink: 0;
+      height: 100dvh; flex-shrink: 0;
       background: #2c3e50; color: white;
       font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px;
       display: flex; flex-direction: column;
@@ -511,11 +511,18 @@
     }
 
     /* ── Layout (uses 100dvh — dynamic viewport, accounts for browser chrome) ── */
-    html, body { height: 100%; margin: 0; overflow: hidden; }
+    html, body {
+      height: 100%; width: 100%;
+      margin: 0; padding: 0;
+      overflow: hidden;
+      overflow-x: hidden; /* prevent any horizontal scroll */
+      -webkit-text-size-adjust: 100%;
+    }
+    *, *::before, *::after { box-sizing: border-box; }
     #webapp-root {
       display: flex; flex-direction: row;
       width: 100vw;
-      height: 100vh;
+      height: 100dvh;
       height: 100dvh; /* dynamic viewport — true visible area on mobile */
       overflow: hidden;
     }
@@ -530,21 +537,21 @@
     #sidebar-reopen-tab {
       position: fixed; top: 50%; left: 0;
       transform: translateY(-50%);
-      z-index: 1500;
-      width: 28px; height: 72px;
+      z-index: 2500; /* above sidebar (2000) so always tappable */
+      width: 32px; height: 80px;
       background: #2980b9; color: white;
-      border-radius: 0 10px 10px 0;
+      border-radius: 0 12px 12px 0;
       display: none;
       align-items: center; justify-content: center;
-      cursor: pointer; font-size: 18px; line-height: 1;
+      cursor: pointer; font-size: 20px; line-height: 1;
       box-shadow: 3px 0 12px rgba(0,0,0,0.5);
       user-select: none; -webkit-tap-highlight-color: transparent;
       transition: background 0.15s, width 0.15s;
+      touch-action: manipulation;
     }
     #sidebar-reopen-tab:hover, #sidebar-reopen-tab:active {
-      background: #3498db; width: 32px;
+      background: #3498db; width: 38px;
     }
-    /* Show only when body is marked as collapsed */
     body.sidebar-collapsed #sidebar-reopen-tab { display: flex; }
 
     /* ── Touch action rules (critical for mobile gestures) ── */
@@ -560,7 +567,7 @@
     #mobile-scrim.visible { display: block; }
 
     /* ── Mobile: sidebar as slide-over overlay ── */
-    @media (max-width: 768px) {
+    @media (max-width: 1024px) {
       html, body { overflow: hidden; height: 100%; }
       body {
         padding: env(safe-area-inset-top) env(safe-area-inset-right)
@@ -569,7 +576,7 @@
       #webapp-root {
         flex-direction: row;
         width: 100vw;
-        height: 100vh; height: 100dvh;
+        height: 100dvh; height: 100dvh;
         overflow: hidden;
       }
 
@@ -577,7 +584,7 @@
       #sidebar {
         position: fixed; top: 0; left: 0; bottom: 0; z-index: 2000;
         width: min(86vw, 340px) !important; max-width: 340px !important; min-width: 0 !important;
-        height: 100vh; height: 100dvh;
+        height: 100dvh; height: 100dvh;
         transform: translateX(-100%);
         transition: transform 0.28s cubic-bezier(.4,0,.2,1);
         box-shadow: 4px 0 24px rgba(0,0,0,0.5);
@@ -635,9 +642,58 @@
 
       #sidebar-resize-handle { width: 24px !important; }
       #sidebar-resize-handle::after { content: ''; }
+
+      /* ── CRITICAL: Override Leaflet.Draw stock toolbar buttons (line, polygon, marker, edit, trash) ── */
+      .leaflet-draw-toolbar a,
+      .leaflet-draw-actions a,
+      .leaflet-control-zoom a {
+        width: 44px !important;
+        height: 44px !important;
+        line-height: 44px !important;
+        background-size: 280px 24px !important; /* keep sprite icons proportional */
+        background-position-y: 10px !important; /* recenter sprite vertically */
+      }
+      .leaflet-draw-actions {
+        top: 0 !important;
+        left: 50px !important;
+      }
+      .leaflet-draw-actions a {
+        padding: 0 12px !important;
+        font-size: 14px !important;
+        font-weight: 600 !important;
+      }
+
+      /* All Leaflet bar containers — bigger spacing */
+      .leaflet-bar a + a { border-top: 1px solid rgba(0,0,0,0.15) !important; }
+      .leaflet-bar { box-shadow: 0 2px 8px rgba(0,0,0,0.25) !important; }
+
+      /* Tool panels (DTM, georef, clip) — fit screen */
+      .tool-panel {
+        max-width: calc(100vw - 24px) !important;
+        max-height: calc(100dvh - 80px) !important;
+        overflow-y: auto !important;
+        font-size: 14px !important;
+      }
     }
 
-    @media (min-width: 769px) {
+    /* ── Touch-device specific (pointer:coarse) — applies to ANY touch device, even big tablets ── */
+    @media (pointer: coarse) {
+      .ctrl-btn, .leaflet-control a, .leaflet-draw-toolbar a {
+        min-width: 44px !important;
+        min-height: 44px !important;
+      }
+      .sb, .tp-btn { min-height: 44px !important; }
+      .si, .ss { min-height: 42px !important; font-size: 16px !important; }
+      /* Provide :active feedback since :hover doesn't work on touch */
+      .sb:active, .ctrl-btn:active, .s-tab:active, .tp-btn:active,
+      .leaflet-control a:active {
+        filter: brightness(0.85) !important;
+        transform: scale(0.97);
+        transition: transform 0.05s;
+      }
+    }
+
+    @media (min-width: 1025px) {
       #mobile-scrim { display: none !important; }
     }
     /* ── Metric converter module ── */
@@ -6777,7 +6833,15 @@
     let _sidebarCollapsed = false;
     const COLLAPSE_THRESHOLD = 100;
 
-    function _isMobileSb() { return window.innerWidth <= 768; }
+    function _isMobileSb() {
+      // Mobile if either: viewport ≤ 1024px OR primary input is touch (coarse pointer)
+      try {
+        if (window.matchMedia && window.matchMedia('(pointer: coarse)').matches) {
+          return window.innerWidth <= 1280; // touch tablet
+        }
+      } catch(_) {}
+      return window.innerWidth <= 1024;
+    }
 
     function _sbSyncReopenTab(collapsed) {
       const tab = document.getElementById('sidebar-reopen-tab');
@@ -6907,7 +6971,7 @@
         sw.x = t.clientX; sw.y = t.clientY; sw.t = Date.now();
       }, {passive: true});
       document.addEventListener('touchend', function(e) {
-        if (window.innerWidth > 768 || !_sidebarCollapsed) return;
+        if (window.innerWidth > 1024 || !_sidebarCollapsed) return;
         const t  = e.changedTouches[0];
         const dx = t.clientX - sw.x;
         const dy = Math.abs(t.clientY - sw.y);
@@ -6922,7 +6986,7 @@
     function _checkOrientation() {
       const warn = document.getElementById('orient-warn');
       if (!warn) return;
-      const isMobileDevice = window.innerWidth <= 768 || 'ontouchstart' in window;
+      const isMobileDevice = window.innerWidth <= 1024 || 'ontouchstart' in window;
       const isPortrait = window.innerHeight > window.innerWidth;
       if (isMobileDevice && isPortrait) {
         warn.classList.add('visible');
