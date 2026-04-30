@@ -8,8 +8,9 @@
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"/>
   <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
   <!-- Leaflet Draw -->
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet-draw@0.4.14/dist/leaflet.draw.css"/>
-  <script src="https://cdn.jsdelivr.net/npm/leaflet-draw@0.4.14/dist/leaflet.draw.js"></script>
+  <!-- Leaflet-Geoman (replaces Leaflet.Draw — much better mobile support) -->
+  <link rel="stylesheet" href="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.17.0/dist/leaflet-geoman.css"/>
+  <script src="https://unpkg.com/@geoman-io/leaflet-geoman-free@2.17.0/dist/leaflet-geoman.min.js"></script>
   <!-- Turf.js for accurate area calculations -->
   <script src="https://cdn.jsdelivr.net/npm/@turf/turf@6/turf.min.js"></script>
   <!-- Chart.js for elevation profile -->
@@ -228,18 +229,66 @@
       box-shadow: 0 4px 16px rgba(0,0,0,0.4);
     }
 
-    /* ── Edit handles: reduced via JS patch, minimal CSS reinforcement ── */
-    .leaflet-editing-icon {
-      width: 8px  !important;
-      height: 8px !important;
-      margin-left: -4px !important;
-      margin-top:  -4px !important;
+    /* ── Leaflet-Geoman: bigger buttons + better mobile touch targets ── */
+    .leaflet-pm-toolbar .leaflet-pm-icon-marker,
+    .leaflet-pm-toolbar .leaflet-pm-icon-polyline,
+    .leaflet-pm-toolbar .leaflet-pm-icon-polygon,
+    .leaflet-pm-toolbar .leaflet-pm-icon-rectangle,
+    .leaflet-pm-toolbar .leaflet-pm-icon-edit,
+    .leaflet-pm-toolbar a {
+      width: 36px !important;
+      height: 36px !important;
+      line-height: 36px !important;
+    }
+    /* Geoman action buttons (Cancel/Finish at top) */
+    .leaflet-pm-actions-container a {
+      padding: 5px 10px !important;
+      font-size: 13px !important;
+      font-weight: 600 !important;
+    }
+    /* Vertex markers — make them bigger for touch */
+    .marker-icon, .marker-icon-middle {
+      cursor: pointer !important;
+    }
+    .marker-icon {
+      width: 14px !important;
+      height: 14px !important;
+      margin-left: -7px !important;
+      margin-top:  -7px !important;
       background: #2980b9 !important;
       border: 2px solid white !important;
+      border-radius: 50% !important;
       box-shadow: 0 1px 3px rgba(0,0,0,0.4) !important;
     }
-    .leaflet-editing-icon:hover {
-      background: #c0392b !important;
+    .marker-icon-middle {
+      width: 10px !important;
+      height: 10px !important;
+      margin-left: -5px !important;
+      margin-top:  -5px !important;
+      background: rgba(52,152,219,0.5) !important;
+      border: 1.5px solid white !important;
+      border-radius: 50% !important;
+    }
+
+    /* ── Touch-only: extra-large vertex handles for finger interaction ── */
+    @media (pointer: coarse) {
+      .marker-icon {
+        width: 22px !important;
+        height: 22px !important;
+        margin-left: -11px !important;
+        margin-top:  -11px !important;
+      }
+      .marker-icon-middle {
+        width: 16px !important;
+        height: 16px !important;
+        margin-left: -8px !important;
+        margin-top:  -8px !important;
+      }
+      .leaflet-pm-toolbar a {
+        width: 44px !important;
+        height: 44px !important;
+        line-height: 44px !important;
+      }
     }
     /* ── Vertex index labels in edit mode ── */
     .vtx-idx-lbl {
@@ -1422,11 +1471,10 @@
 
     function _isDrawingOrEditing() {
       try {
-        const dt = drawControl._toolbars && drawControl._toolbars.draw;
-        const et = drawControl._toolbars && drawControl._toolbars.edit;
-        const dActive = dt && dt._activeMode && dt._activeMode.handler;
-        const eActive = et && et._activeMode && et._activeMode.handler;
-        return !!(dActive || eActive || _drawingActive || _editModeActive);
+        if (typeof map !== 'undefined' && map.pm) {
+          if (map.pm.globalDrawModeEnabled() || map.pm.globalEditModeEnabled()) return true;
+        }
+        return !!(_drawingActive || _editModeActive);
       } catch(e) { return false; }
     }
 
@@ -1434,15 +1482,8 @@
       // If user is mid-draw, cancel the current draw first
       if (_isDrawingOrEditing()) {
         try {
-          const dt = drawControl._toolbars && drawControl._toolbars.draw;
-          const et = drawControl._toolbars && drawControl._toolbars.edit;
-          if (dt && dt._activeMode && dt._activeMode.handler) {
-            dt._activeMode.handler.disable();
-          }
-          if (et && et._activeMode && et._activeMode.handler) {
-            et._activeMode.handler.save();
-            et._activeMode.handler.disable();
-          }
+          if (map.pm.globalDrawModeEnabled()) map.pm.disableGlobalDrawMode();
+          if (map.pm.globalEditModeEnabled()) map.pm.disableGlobalEditMode();
           _drawingActive = false; _editModeActive = false;
           document.body.classList.remove('draw-mode-active');
           document.body.classList.remove('edit-mode-active');
@@ -1456,15 +1497,8 @@
     function redo() {
       if (_isDrawingOrEditing()) {
         try {
-          const dt = drawControl._toolbars && drawControl._toolbars.draw;
-          const et = drawControl._toolbars && drawControl._toolbars.edit;
-          if (dt && dt._activeMode && dt._activeMode.handler) {
-            dt._activeMode.handler.disable();
-          }
-          if (et && et._activeMode && et._activeMode.handler) {
-            et._activeMode.handler.save();
-            et._activeMode.handler.disable();
-          }
+          if (map.pm.globalDrawModeEnabled()) map.pm.disableGlobalDrawMode();
+          if (map.pm.globalEditModeEnabled()) map.pm.disableGlobalEditMode();
           _drawingActive = false; _editModeActive = false;
           document.body.classList.remove('draw-mode-active');
           document.body.classList.remove('edit-mode-active');
@@ -1557,103 +1591,124 @@
       layer.label = labelMarker;
     }
     
-    // ── Traduction française de Leaflet Draw ──────────────────────────────────
-    L.drawLocal = {
-      draw: {
-        toolbar: {
-          actions: { title: 'Annuler le dessin', text: 'Annuler' },
-          finish:  { title: 'Terminer le dessin', text: 'Terminer' },
-          undo:    { title: 'Supprimer le dernier point dessiné', text: 'Effacer dernier point' },
-          buttons: {
-            polyline:  'Dessiner une polyligne',
-            polygon:   'Dessiner un polygone',
-            rectangle: 'Dessiner un rectangle',
-            circle:    'Dessiner un cercle',
-            marker:    'Placer un marqueur',
-            circlemarker: 'Placer un marqueur circulaire'
-          }
-        },
-        handlers: {
-          circle:      { tooltip: { start: 'Cliquez et glissez pour dessiner un cercle.' }, radius: 'Rayon' },
-          circlemarker:{ tooltip: { start: 'Cliquez sur la carte pour placer un marqueur circulaire.' } },
-          marker:      { tooltip: { start: 'Cliquez sur la carte pour placer un marqueur.' } },
-          polygon:     { tooltip: { start: 'Cliquez pour commencer à dessiner.', cont: 'Cliquez pour continuer.', end: 'Cliquez sur le premier point pour fermer.' } },
-          polyline:    { error: '<strong>Erreur :</strong> les segments ne doivent pas se croiser !', tooltip: { start: 'Cliquez pour commencer.', cont: 'Cliquez pour continuer.', end: 'Double-cliquez pour terminer.' } },
-          rectangle:   { tooltip: { start: 'Cliquez et glissez pour dessiner un rectangle.' } },
-          simpleshape: { tooltip: { end: 'Relâchez la souris pour terminer.' } }
-        }
-      },
-      edit: {
-        toolbar: {
-          actions: { save: { title: 'Enregistrer les modifications', text: 'Enregistrer' }, cancel: { title: 'Annuler les modifications', text: 'Annuler' }, clearAll: { title: 'Tout effacer', text: 'Tout effacer' } },
-          buttons:  { edit: 'Modifier les objets', editDisabled: 'Aucun objet à modifier', remove: 'Supprimer des objets', removeDisabled: 'Aucun objet à supprimer' }
-        },
-        handlers: {
-          edit:   { tooltip: { text: 'Glissez les poignées ou le marqueur pour modifier.', subtext: 'Cliquez Annuler pour défaire les modifications.' } },
-          remove: { tooltip: { text: 'Cliquez sur un objet pour le supprimer.' } }
-        }
+    // ════════════════════════════════════════════════════════════════════
+    // LEAFLET-GEOMAN — modern drawing toolkit (mobile-first, native touch)
+    // ════════════════════════════════════════════════════════════════════
+    // Geoman handles ALL the things we hacked manually:
+    //   ✔ Long-press finish on touch (native)
+    //   ✔ Drag-to-draw rectangle on mobile (native)
+    //   ✔ No false intersection warnings
+    //   ✔ Drag vertex handles on touch
+    //   ✔ Tap-tap point placement with proper hit testing
+    // ════════════════════════════════════════════════════════════════════
+
+    // Set French translations
+    map.pm.setLang('fr');
+
+    // Add Geoman controls (top-left position)
+    map.pm.addControls({
+      position: 'topleft',
+      drawMarker: true,
+      drawCircleMarker: false,
+      drawCircle: false,
+      drawPolyline: true,
+      drawPolygon: true,
+      drawRectangle: true,
+      drawText: false,
+      cutPolygon: false,
+      editMode: true,
+      dragMode: false,
+      removalMode: false, // we use our own custom delete
+      rotateMode: false
+    });
+
+    // Default drawing styles to match the previous palette
+    map.pm.setPathOptions({
+      color:'#27ae60', weight:2, fillColor:'#27ae60', fillOpacity:0.3
+    });
+
+    // Configure global Geoman options for better mobile UX
+    map.pm.setGlobalOptions({
+      snappable: true,            // snap to vertices and edges
+      snapDistance: 20,
+      allowSelfIntersection: true,
+      requireSnapToFinish: false,
+      finishOn: null,             // we handle finish via long-press OR double-tap
+      hintlineStyle: { color: '#3498db', dashArray: [5, 5] },
+      templineStyle: { color: '#3498db' },
+      tooltips: false,            // disable tooltips on mobile (they get in the way)
+      pathOptions: { color: '#27ae60', weight: 2, fillOpacity: 0.3 }
+    });
+
+    // Compatibility shim for legacy code that references `drawControl._toolbars`
+    // We no longer have Leaflet.Draw — provide a stub that mimics the API surface
+    const drawControl = {
+      _toolbars: {
+        draw: { _activeMode: null },
+        edit: { _activeMode: null }
       }
     };
-
-    const drawControl = new L.Control.Draw({
-      edit: { featureGroup: drawnItems, remove: false }, // custom delete below
-      draw: {
-        polygon:   { shapeOptions: { color: 'green', weight: 2, fillOpacity: 0.3 }, allowIntersection: true },
-        polyline:  { shapeOptions: { color: 'blue',  weight: 4 }, metric: true, allowIntersection: true },
-        rectangle: { shapeOptions: { color: 'green', weight: 2, fillOpacity: 0.3 } },
-        circle: false, circlemarker: false, marker: true
+    // Track active draw shape via Geoman events for the legacy `_isDrawingOrEditing` etc.
+    map.on('pm:drawstart', function(e) {
+      drawControl._toolbars.draw._activeMode = {
+        handler: { _poly: e.shape !== 'Marker' && e.shape !== 'Rectangle', shape: e.shape }
+      };
+      _drawingActive = true;
+      document.body.classList.add('draw-mode-active');
+      if (e.shape === 'Line' || e.shape === 'Polygon') {
+        _showMapBanner('✏️ Tapez pour ajouter des points • Double-tapez ou maintenez pour terminer');
+        setTimeout(_hideMapBanner, 3500);
+      } else if (e.shape === 'Rectangle') {
+        _showMapBanner('🟦 Glissez pour tracer le rectangle');
+        setTimeout(_hideMapBanner, 3000);
       }
     });
-    map.addControl(drawControl);
+    map.on('pm:drawend', function() {
+      drawControl._toolbars.draw._activeMode = null;
+      _drawingActive = false;
+      document.body.classList.remove('draw-mode-active');
+      _hideMapBanner();
+    });
 
-    // ── Long-press to finish polyline/polygon (mobile-friendly) ─────────
-    // Single tap = add vertex. Long-press (≥600ms) on map = finish drawing.
+    // ── Long-press finish for polyline/polygon (Geoman doesn't have it built-in) ──
     (function setupLongPressFinish() {
       let pressTimer = null, pressStart = null, pressMoved = false;
 
-      function _activeDrawHandler() {
-        try {
-          const dt = drawControl._toolbars && drawControl._toolbars.draw;
-          if (!dt || !dt._activeMode || !dt._activeMode.handler) return null;
-          const h = dt._activeMode.handler;
-          // Only polyline/polygon — rectangle uses drag, marker is single tap
-          if (h._poly || h.completeShape) return h;
-          return null;
-        } catch(e) { return null; }
+      function _activeShape() {
+        if (!map.pm.globalDrawModeEnabled()) return null;
+        const shape = map.pm.Draw.getActiveShape();
+        if (shape === 'Line' || shape === 'Polygon') return shape;
+        return null;
       }
 
       function startPress(e) {
-        const h = _activeDrawHandler();
-        if (!h) return;
+        if (!_activeShape()) return;
         const t = (e.touches && e.touches[0]) || e;
         pressStart = { x: t.clientX, y: t.clientY };
         pressMoved = false;
         clearTimeout(pressTimer);
         pressTimer = setTimeout(function() {
           if (pressMoved) return;
-          // Need at least 2 vertices for polyline, 3 for polygon
-          const handler = _activeDrawHandler();
-          if (!handler) return;
+          const shape = _activeShape();
+          if (!shape) return;
           try {
-            const markersLen = (handler._markers || []).length;
-            const isPolygon = handler.type === 'polygon' || (handler.options && handler.options.shapeOptions && handler.options.shapeOptions.fillOpacity);
-            const minVerts = isPolygon ? 3 : 2;
-            if (markersLen < minVerts) {
-              _showMapBanner('⚠ Au moins ' + minVerts + ' points requis');
-              setTimeout(_hideMapBanner, 1500);
-              return;
+            // Geoman API to finish the current shape
+            const draw = map.pm.Draw[shape];
+            if (draw && typeof draw._finishShape === 'function') {
+              draw._finishShape();
+            } else if (map.pm.Draw && typeof map.pm.Draw.disable === 'function') {
+              // Fallback: try to programmatically click the first vertex
+              if (draw && draw._layer && draw._layer.getLatLngs) {
+                const pts = draw._layer.getLatLngs();
+                const flat = Array.isArray(pts[0]) ? pts[0] : pts;
+                if (shape === 'Polygon' && flat.length >= 3) draw._finishShape && draw._finishShape();
+                else if (shape === 'Line' && flat.length >= 2) draw._finishShape && draw._finishShape();
+              }
             }
-            if (typeof handler.completeShape === 'function') {
-              handler.completeShape();
-            } else if (typeof handler._finishShape === 'function') {
-              handler._finishShape();
-            }
-            // Haptic feedback if available
             if (navigator.vibrate) navigator.vibrate(40);
           } catch(err) { console.warn('long-press finish:', err); }
-        }, 600); // 600ms long press
+        }, 600);
       }
-
       function movePress(e) {
         if (!pressStart) return;
         const t = (e.touches && e.touches[0]) || e;
@@ -1664,7 +1719,6 @@
           clearTimeout(pressTimer);
         }
       }
-
       function endPress() {
         clearTimeout(pressTimer);
         pressTimer = null; pressStart = null;
@@ -1675,58 +1729,20 @@
       mc.addEventListener('pointermove', movePress,  {passive: true});
       mc.addEventListener('pointerup',   endPress,   {passive: true});
       mc.addEventListener('pointercancel', endPress, {passive: true});
-
-      // Show hint banner when entering draw mode
-      map.on(L.Draw.Event.DRAWSTART, function(e) {
-        if (e.layerType === 'polyline' || e.layerType === 'polygon') {
-          _showMapBanner('✏️ Tapez pour ajouter des points • Maintenez appuyé pour terminer');
-          setTimeout(_hideMapBanner, 3500);
-        }
-      });
     })();
 
-    // ── Patch Leaflet Draw edit handles: smaller squares (8×8) ──────────────
-    // Override the default icon size used by L.Edit.PolyVerticesEdit
-    (function patchEditIcon() {
-      const smallIcon = L.icon({
-        iconUrl: 'https://cdnjs.cloudflare.com/ajax/libs/leaflet.draw/1.0.4/images/marker-icon.png',
-        iconSize: [8, 8], iconAnchor: [4, 4]
-      });
-      // Leaflet Draw uses a divIcon for editable vertices; patch its prototype
-      if (L.Edit && L.Edit.PolyVerticesEdit) {
-        const origInit = L.Edit.PolyVerticesEdit.prototype.initialize;
-        L.Edit.PolyVerticesEdit.prototype.initialize = function(poly, latlngs, options) {
-          origInit.call(this, poly, latlngs, options);
-        };
-        // Patch the _defaultShapeOptions to use smaller markers
-        const origAddHooks = L.Edit.PolyVerticesEdit.prototype.addHooks;
-        L.Edit.PolyVerticesEdit.prototype.addHooks = function() {
-          origAddHooks.call(this);
-          // After hooks added, resize all vertex markers
-          if (this._markerGroup) {
-            this._markerGroup.eachLayer(function(m) {
-              const el = m.getElement && m.getElement();
-              if (el) {
-                el.style.width  = '8px';
-                el.style.height = '8px';
-                el.style.marginLeft = '-4px';
-                el.style.marginTop  = '-4px';
-              }
-            });
-          }
-        };
-      }
-    })();
+    // (Vertex marker styling is now handled via CSS for Geoman — see .marker-icon)
 
-    // ── Disable all active draw/edit modes safely ─────────────────────────────
+    // ── Disable all active draw/edit modes safely (Geoman API) ──────────────
     function disableAllDrawModes() {
       try {
-        const dt = drawControl._toolbars.draw;
-        if (dt && dt._activeMode && dt._activeMode.handler) dt._activeMode.handler.disable();
+        if (map.pm.globalDrawModeEnabled()) map.pm.disableGlobalDrawMode();
       } catch(e) {}
       try {
-        const et = drawControl._toolbars.edit;
-        if (et && et._activeMode && et._activeMode.handler) et._activeMode.handler.disable();
+        if (map.pm.globalEditModeEnabled()) map.pm.disableGlobalEditMode();
+      } catch(e) {}
+      try {
+        if (map.pm.globalDragModeEnabled && map.pm.globalDragModeEnabled()) map.pm.disableGlobalDragMode();
       } catch(e) {}
     }
 
@@ -2769,38 +2785,37 @@
         importFromExcel(testCSV);
       }
 
-      // ── Drawing shortcuts (work during draw/edit mode) ────────────────────
-      // Get current active draw handler (if any)
-      const drawToolbar = drawControl._toolbars && drawControl._toolbars.draw;
-      const editToolbar = drawControl._toolbars && drawControl._toolbars.edit;
-      const activeDrawMode  = drawToolbar  && drawToolbar._activeMode  && drawToolbar._activeMode.handler;
-      const activeEditMode  = editToolbar  && editToolbar._activeMode  && editToolbar._activeMode.handler;
-      const anyActive = activeDrawMode || activeEditMode;
+      // ── Drawing shortcuts (work during draw/edit mode) — Geoman ───────────
+      const drawActive = map.pm.globalDrawModeEnabled();
+      const editActive = map.pm.globalEditModeEnabled();
+      const anyActive  = drawActive || editActive;
 
       if (anyActive) {
         if (e.key === 'Escape') {
           e.preventDefault();
           if (_deleteMode) _deactivateDeleteMode();
-          if (activeDrawMode) { try { activeDrawMode.disable(); } catch(_) {} }
-          if (activeEditMode) { try { activeEditMode.revertLayers(); activeEditMode.disable(); } catch(_) {} }
-        } else if (e.key === 'Enter' && activeEditMode && !activeDrawMode) {
-          // Enter = save edits (same as clicking "Enregistrer")
+          if (drawActive) { try { map.pm.disableGlobalDrawMode(); } catch(_) {} }
+          if (editActive) { try { map.pm.disableGlobalEditMode(); } catch(_) {} }
+        } else if (e.key === 'Enter' && editActive && !drawActive) {
+          // Enter = save edits
           e.preventDefault();
-          try { activeEditMode.save(); activeEditMode.disable(); } catch(_) {}
-        } else if ((e.key === 'Delete' || e.key === 'Backspace') && activeDrawMode) {
+          try { map.pm.disableGlobalEditMode(); } catch(_) {}
+        } else if ((e.key === 'Delete' || e.key === 'Backspace') && drawActive) {
           e.preventDefault();
-          // Delete last vertex during polygon/polyline drawing
-          if (typeof activeDrawMode.deleteLastVertex === 'function') {
-            activeDrawMode.deleteLastVertex();
-          }
-        } else if (e.key === 'Enter' && activeDrawMode) {
+          // Delete last vertex during drawing
+          try {
+            const shape = map.pm.Draw.getActiveShape();
+            const draw  = map.pm.Draw[shape];
+            if (draw && typeof draw._removeLastVertex === 'function') draw._removeLastVertex();
+          } catch(_) {}
+        } else if (e.key === 'Enter' && drawActive) {
           e.preventDefault();
           // Finish current shape
-          if (typeof activeDrawMode._finishShape === 'function') {
-            activeDrawMode._finishShape();
-          } else if (typeof activeDrawMode.completeShape === 'function') {
-            activeDrawMode.completeShape();
-          }
+          try {
+            const shape = map.pm.Draw.getActiveShape();
+            const draw  = map.pm.Draw[shape];
+            if (draw && typeof draw._finishShape === 'function') draw._finishShape();
+          } catch(_) {}
         }
       } else {
         // Not in draw/edit mode
@@ -2956,19 +2971,11 @@
     let printRectLayer  = null;
     let printBounds     = null;
 
-    // ─── Print extent mode flag (set before L.Draw.Rectangle starts) ─────────
+    // ─── Print extent mode flag (set before Geoman Rectangle starts) ─────────
     let printExtentMode = false;
+    // (DRAWSTART/DRAWSTOP already wired via pm:drawstart / pm:drawend above)
 
-    map.on(L.Draw.Event.DRAWSTART, function() {
-      _drawingActive = true;
-      document.body.classList.add('draw-mode-active');
-    });
-    map.on(L.Draw.Event.DRAWSTOP, function() {
-      _drawingActive = false;
-      document.body.classList.remove('draw-mode-active');
-    });
-
-    map.on(L.Draw.Event.CREATED, function (e) {
+    map.on('pm:create', function (e) {
       // If clip draw mode is active, handle as clip boundary only
       if (clipMode === 'draw') {
         const bl = e.layer;
@@ -3084,63 +3091,65 @@
       }
     });
 
-    map.on(L.Draw.Event.EDITED, function (e) {
+    // Geoman fires pm:edit per-layer (not on the map with e.layers).
+    // Listen on drawnItems and forward to the original logic.
+    drawnItems.on('pm:edit', function (e) {
       saveState();
-      e.layers.eachLayer(function(layer) {
-        // ── Update popup content with new measurements ────────────────────────
-        if (layer instanceof L.Marker) {
-          const c = layer.getLatLng();
-          const name = layer.customName || 'Point';
-          layer.bindPopup(`<b>${name}</b><br>Lat: ${c.lat.toFixed(6)}<br>Lon: ${c.lng.toFixed(6)}<br><br>` +
-            `<a href="#" onclick="bridge.open_marker_in_maps(${c.lat}, ${c.lng}); return false;">🧭 Ouvrir dans Google Maps</a>`);
-        } else if (layer instanceof L.Polyline && !(layer instanceof L.Polygon)) {
-          const coords = layer.getLatLngs();
-          if (coords && coords.length >= 2) {
-            const length = calculateLength(coords);
-            const name = layer.customName || 'Ligne';
-            let pc = `<b>${name}</b><br>Longueur: ${length.toFixed(2)} m<br>`;
-            coords.forEach((p, i) => { pc += `P${i+1} | ${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}<br>`; });
-            layer.bindPopup(pc);
-            if (layer === selectedPolyline && isElevationActive) updateElevationChart(layer);
-          }
-        } else if (layer instanceof L.Polygon || layer instanceof L.Rectangle) {
-          const coords = layer.getLatLngs()[0];
-          if (coords && coords.length >= 3) {
-            const area = calculateArea(coords);
-            const perimeter = calculateLength(coords);
-            const type = layer instanceof L.Rectangle ? 'Rectangle' : 'Polygone';
-            const name = layer.customName || type;
-            let pc = `<b>${name}</b><br>Superficie: ${area.toFixed(2)} m²<br>Périmètre: ${perimeter.toFixed(2)} m<br>`;
-            coords.forEach((p, i) => { pc += `P${i+1} | ${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}<br>`; });
-            layer.bindPopup(pc);
-          }
+      const layer = e.layer || e.target;
+      if (!layer) return;
+      // ── Update popup content with new measurements ────────────────────────
+      if (layer instanceof L.Marker) {
+        const c = layer.getLatLng();
+        const name = layer.customName || 'Point';
+        layer.bindPopup(`<b>${name}</b><br>Lat: ${c.lat.toFixed(6)}<br>Lon: ${c.lng.toFixed(6)}<br><br>` +
+          `<a href="#" onclick="bridge.open_marker_in_maps(${c.lat}, ${c.lng}); return false;">🧭 Ouvrir dans Google Maps</a>`);
+      } else if (layer instanceof L.Polyline && !(layer instanceof L.Polygon)) {
+        const coords = layer.getLatLngs();
+        if (coords && coords.length >= 2) {
+          const length = calculateLength(coords);
+          const name = layer.customName || 'Ligne';
+          let pc = `<b>${name}</b><br>Longueur: ${length.toFixed(2)} m<br>`;
+          coords.forEach((p, i) => { pc += `P${i+1} | ${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}<br>`; });
+          layer.bindPopup(pc);
+          if (layer === selectedPolyline && isElevationActive) updateElevationChart(layer);
         }
-        // ── Recreate label at new position (handles ALL layer types) ──────────
-        recreateLabel(layer);
-      });
+      } else if (layer instanceof L.Polygon || layer instanceof L.Rectangle) {
+        const coords = layer.getLatLngs()[0];
+        if (coords && coords.length >= 3) {
+          const area = calculateArea(coords);
+          const perimeter = calculateLength(coords);
+          const type = layer instanceof L.Rectangle ? 'Rectangle' : 'Polygone';
+          const name = layer.customName || type;
+          let pc = `<b>${name}</b><br>Superficie: ${area.toFixed(2)} m²<br>Périmètre: ${perimeter.toFixed(2)} m<br>`;
+          coords.forEach((p, i) => { pc += `P${i+1} | ${p.lat.toFixed(6)}, ${p.lng.toFixed(6)}<br>`; });
+          layer.bindPopup(pc);
+        }
+      }
+      // ── Recreate label at new position (handles ALL layer types) ──────────
+      recreateLabel(layer);
     });
 
-    map.on(L.Draw.Event.DELETED, function (e) {
-      e.layers.eachLayer(function(layer) {
-        if (layer.label) {
-          labels.removeLayer(layer.label);
+    drawnItems.on('pm:remove', function (e) {
+      const layer = e.layer || e.target;
+      if (!layer) return;
+      if (layer.label) {
+        labels.removeLayer(layer.label);
+      }
+      if (layer === selectedPolyline) {
+        if (elevationChart) {
+          elevationChart.destroy();
+          elevationChart = null;
         }
-        if (layer === selectedPolyline) {
-          if (elevationChart) {
-            elevationChart.destroy();
-            elevationChart = null;
-          }
           document.getElementById('elevation-container').classList.remove('visible');
           document.getElementById('map').style.height = '100%';
           map.invalidateSize();
           selectedPolyline = null;
-        }
-        // Remove from convertedMarkers tracking array if present
-        const idx = convertedMarkers.indexOf(layer);
-        if (idx !== -1) {
-          convertedMarkers.splice(idx, 1);
-        }
-      });
+      }
+      // Remove from convertedMarkers tracking array if present
+      const idx = convertedMarkers.indexOf(layer);
+      if (idx !== -1) {
+        convertedMarkers.splice(idx, 1);
+      }
       // Rebuild convertedCoords from remaining convertedMarkers
       _rebuildConvertedCoords();
       saveState();
@@ -4091,15 +4100,15 @@
     };
 
     function startExtentSelection() {
-      // Signal Python to show a hint
       if (bridge && bridge.update_extent_label)
         bridge.update_extent_label('Dessinez le rectangle sur la carte…');
 
-      printExtentMode = true;  // flag checked in CREATED handler
-      const rectHandler = new L.Draw.Rectangle(map, {
-        shapeOptions: { color: '#e74c3c', weight: 3, fillOpacity: 0.06, dashArray: '10, 6' }
+      printExtentMode = true;  // flag checked in pm:create handler
+      // Use Geoman's drawing API
+      map.pm.enableDraw('Rectangle', {
+        snappable: false,
+        pathOptions: { color: '#e74c3c', weight: 3, fillOpacity: 0.06, dashArray: '10, 6' }
       });
-      rectHandler.enable();
     }
     window.startExtentSelection = startExtentSelection;
 
@@ -5064,22 +5073,23 @@
     let _vtxLabelTimer = null;
     let _editModeActive = false;
 
-    map.on(L.Draw.Event.EDITSTART, function() {
-      _editModeActive = true;
-      document.body.classList.add('edit-mode-active');
-      _vtxLabelGroup.clearLayers();
-      _refreshVtxLabels();
-      clearInterval(_vtxLabelTimer);
-      _vtxLabelTimer = setInterval(_refreshVtxLabels, 100);
-      // Show floating Apply/Cancel bar (especially useful on mobile where Leaflet Draw bar is hard to tap)
-      _showEditActionBar();
-    });
-    map.on(L.Draw.Event.EDITSTOP, function() {
-      _editModeActive = false;
-      document.body.classList.remove('edit-mode-active');
-      clearInterval(_vtxLabelTimer);
-      _vtxLabelGroup.clearLayers();
-      _hideEditActionBar();
+    // Geoman: pm:globaleditmodetoggled fires when global edit mode is toggled
+    map.on('pm:globaleditmodetoggled', function(e) {
+      if (e.enabled) {
+        _editModeActive = true;
+        document.body.classList.add('edit-mode-active');
+        _vtxLabelGroup.clearLayers();
+        _refreshVtxLabels();
+        clearInterval(_vtxLabelTimer);
+        _vtxLabelTimer = setInterval(_refreshVtxLabels, 100);
+        _showEditActionBar();
+      } else {
+        _editModeActive = false;
+        document.body.classList.remove('edit-mode-active');
+        clearInterval(_vtxLabelTimer);
+        _vtxLabelGroup.clearLayers();
+        _hideEditActionBar();
+      }
     });
 
     // ── Floating Edit Action Bar (Apply / Cancel) ─────────────────────────
@@ -5112,21 +5122,16 @@
       bar.querySelector('#edit-bar-apply').onclick = function(e) {
         e.preventDefault(); e.stopPropagation();
         try {
-          const et = drawControl._toolbars.edit;
-          if (et && et._activeMode && et._activeMode.handler) {
-            et._activeMode.handler.save();
-            et._activeMode.handler.disable();
-          }
+          // Geoman: just disable global edit mode — changes are persistent
+          map.pm.disableGlobalEditMode();
         } catch(err) { console.warn('Edit save failed:', err); }
       };
       bar.querySelector('#edit-bar-cancel').onclick = function(e) {
         e.preventDefault(); e.stopPropagation();
         try {
-          const et = drawControl._toolbars.edit;
-          if (et && et._activeMode && et._activeMode.handler) {
-            et._activeMode.handler.revertLayers();
-            et._activeMode.handler.disable();
-          }
+          // Geoman doesn't have built-in revert, but we can use undo
+          map.pm.disableGlobalEditMode();
+          if (typeof undo === 'function' && undoStack.length) undo();
         } catch(err) { console.warn('Edit cancel failed:', err); }
       };
     }
