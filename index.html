@@ -159,28 +159,41 @@
     .tool-panel {
       display: none; position: absolute; z-index: 5000;
       background: #1e2d3d; border-radius: 10px;
-      min-width: 240px; max-width: 300px;
+      width: min(300px, calc(100vw - 24px));
+      max-width: calc(100vw - 24px);
+      max-height: calc(100dvh - 24px);
       box-shadow: 0 8px 32px rgba(0,0,0,0.5);
       font-family: 'Segoe UI', Arial, sans-serif;
-      color: #ecf0f1; overflow: hidden;
+      color: #ecf0f1;
       user-select: none;
+      display: none;
+      flex-direction: column; /* header fixed, body scrolls */
     }
-    .tool-panel.visible { display: block; }
+    .tool-panel.visible { display: flex; }
     .tool-panel-header {
       background: linear-gradient(135deg, #2c3e50, #34495e);
       padding: 10px 14px; display: flex; align-items: center;
       justify-content: space-between; border-bottom: 1px solid #3d5166;
       cursor: move;
+      flex-shrink: 0; /* header always visible */
+      touch-action: none; /* drag header on touch */
     }
     .tool-panel-header span { font-size: 13px; font-weight: bold; color: #ecf0f1; }
     .tool-panel-close {
       cursor: pointer; color: #95a5a6; font-size: 16px; line-height: 1;
-      width: 22px; height: 22px; display: flex; align-items: center;
+      width: 32px; height: 32px; display: flex; align-items: center;
       justify-content: center; border-radius: 50%;
       transition: background 0.15s, color 0.15s;
+      -webkit-tap-highlight-color: transparent;
     }
     .tool-panel-close:hover { background: #e74c3c; color: #fff; }
-    .tool-panel-body { padding: 12px 14px; }
+    .tool-panel-body {
+      padding: 12px 14px;
+      overflow-y: auto; /* scroll inside panel body */
+      -webkit-overflow-scrolling: touch;
+      flex: 1 1 auto;
+      min-height: 0;
+    }
     .tool-panel .tp-btn {
       width: 100%; padding: 8px 12px; margin: 4px 0; border: none;
       border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 600;
@@ -625,10 +638,8 @@
     /* ── Mobile: sidebar as slide-over overlay ── */
     @media (max-width: 1024px) {
       html, body { overflow: hidden; height: 100%; }
-      body {
-        padding: env(safe-area-inset-top) env(safe-area-inset-right)
-                 env(safe-area-inset-bottom) env(safe-area-inset-left);
-      }
+      /* CRITICAL: do NOT pad body — it shifts absolute children (WebGL/canvas overlays) */
+      body { padding: 0 !important; }
       #webapp-root {
         flex-direction: row;
         width: 100vw;
@@ -699,16 +710,34 @@
       #sidebar-resize-handle { width: 24px !important; }
       #sidebar-resize-handle::after { content: ''; }
 
-      /* ── CRITICAL: Override Leaflet.Draw stock toolbar buttons (line, polygon, marker, edit, trash) ── */
+      /* ── Override Leaflet.Draw stock toolbar buttons - PROPER scaling ── */
       .leaflet-draw-toolbar a,
       .leaflet-draw-actions a,
       .leaflet-control-zoom a {
         width: 44px !important;
         height: 44px !important;
         line-height: 44px !important;
-        background-size: 280px 24px !important; /* keep sprite icons proportional */
-        background-position-y: 10px !important; /* recenter sprite vertically */
       }
+      /* The Leaflet.Draw sprite is 270×30px with 30px-wide tiles. Default is 30×30.
+         When we scale the button to 44×44, the sprite must also scale so each tile
+         remains aligned. Solution: use background-size that makes each 30px tile = 44px. */
+      .leaflet-draw-toolbar a {
+        background-size: 396px 30px !important; /* 270 * 44/30 = 396 */
+        /* All sprite x-positions in the original CSS are multiples of 30px;
+           multiplying by 44/30 ≈ 1.467 lets us reposition each icon. */
+      }
+      .leaflet-draw-toolbar .leaflet-draw-draw-polyline   { background-position:    0px 0 !important; }
+      .leaflet-draw-toolbar .leaflet-draw-draw-polygon    { background-position:  -44px 0 !important; }
+      .leaflet-draw-toolbar .leaflet-draw-draw-rectangle  { background-position:  -88px 0 !important; }
+      .leaflet-draw-toolbar .leaflet-draw-draw-circle     { background-position: -132px 0 !important; }
+      .leaflet-draw-toolbar .leaflet-draw-draw-marker     { background-position: -176px 0 !important; }
+      .leaflet-draw-toolbar .leaflet-draw-draw-circlemarker { background-position: -396px 0 !important; }
+      .leaflet-draw-toolbar .leaflet-draw-edit-edit       { background-position: -220px 0 !important; }
+      .leaflet-draw-toolbar .leaflet-draw-edit-remove     { background-position: -264px 0 !important; }
+
+      /* Hover/active states kept */
+      .leaflet-draw-toolbar a:hover { background-size: 396px 30px !important; }
+
       .leaflet-draw-actions {
         top: 0 !important;
         left: 50px !important;
@@ -717,6 +746,7 @@
         padding: 0 12px !important;
         font-size: 14px !important;
         font-weight: 600 !important;
+        background-image: none !important; /* Save/Cancel buttons are text-only */
       }
 
       /* All Leaflet bar containers — bigger spacing */
@@ -1568,13 +1598,92 @@
     const drawControl = new L.Control.Draw({
       edit: { featureGroup: drawnItems, remove: false }, // custom delete below
       draw: {
-        polygon:   { shapeOptions: { color: 'green', weight: 2, fillOpacity: 0.3 }, allowIntersection: false, drawError: { color: 'red', timeout: 1000 } },
-        polyline:  { shapeOptions: { color: 'blue',  weight: 4 }, metric: true },
+        polygon:   { shapeOptions: { color: 'green', weight: 2, fillOpacity: 0.3 }, allowIntersection: true },
+        polyline:  { shapeOptions: { color: 'blue',  weight: 4 }, metric: true, allowIntersection: true },
         rectangle: { shapeOptions: { color: 'green', weight: 2, fillOpacity: 0.3 } },
         circle: false, circlemarker: false, marker: true
       }
     });
     map.addControl(drawControl);
+
+    // ── Long-press to finish polyline/polygon (mobile-friendly) ─────────
+    // Single tap = add vertex. Long-press (≥600ms) on map = finish drawing.
+    (function setupLongPressFinish() {
+      let pressTimer = null, pressStart = null, pressMoved = false;
+
+      function _activeDrawHandler() {
+        try {
+          const dt = drawControl._toolbars && drawControl._toolbars.draw;
+          if (!dt || !dt._activeMode || !dt._activeMode.handler) return null;
+          const h = dt._activeMode.handler;
+          // Only polyline/polygon — rectangle uses drag, marker is single tap
+          if (h._poly || h.completeShape) return h;
+          return null;
+        } catch(e) { return null; }
+      }
+
+      function startPress(e) {
+        const h = _activeDrawHandler();
+        if (!h) return;
+        const t = (e.touches && e.touches[0]) || e;
+        pressStart = { x: t.clientX, y: t.clientY };
+        pressMoved = false;
+        clearTimeout(pressTimer);
+        pressTimer = setTimeout(function() {
+          if (pressMoved) return;
+          // Need at least 2 vertices for polyline, 3 for polygon
+          const handler = _activeDrawHandler();
+          if (!handler) return;
+          try {
+            const markersLen = (handler._markers || []).length;
+            const isPolygon = handler.type === 'polygon' || (handler.options && handler.options.shapeOptions && handler.options.shapeOptions.fillOpacity);
+            const minVerts = isPolygon ? 3 : 2;
+            if (markersLen < minVerts) {
+              _showMapBanner('⚠ Au moins ' + minVerts + ' points requis');
+              setTimeout(_hideMapBanner, 1500);
+              return;
+            }
+            if (typeof handler.completeShape === 'function') {
+              handler.completeShape();
+            } else if (typeof handler._finishShape === 'function') {
+              handler._finishShape();
+            }
+            // Haptic feedback if available
+            if (navigator.vibrate) navigator.vibrate(40);
+          } catch(err) { console.warn('long-press finish:', err); }
+        }, 600); // 600ms long press
+      }
+
+      function movePress(e) {
+        if (!pressStart) return;
+        const t = (e.touches && e.touches[0]) || e;
+        const dx = t.clientX - pressStart.x;
+        const dy = t.clientY - pressStart.y;
+        if (Math.hypot(dx, dy) > 10) {
+          pressMoved = true;
+          clearTimeout(pressTimer);
+        }
+      }
+
+      function endPress() {
+        clearTimeout(pressTimer);
+        pressTimer = null; pressStart = null;
+      }
+
+      const mc = map.getContainer();
+      mc.addEventListener('pointerdown', startPress, {passive: true});
+      mc.addEventListener('pointermove', movePress,  {passive: true});
+      mc.addEventListener('pointerup',   endPress,   {passive: true});
+      mc.addEventListener('pointercancel', endPress, {passive: true});
+
+      // Show hint banner when entering draw mode
+      map.on(L.Draw.Event.DRAWSTART, function(e) {
+        if (e.layerType === 'polyline' || e.layerType === 'polygon') {
+          _showMapBanner('✏️ Tapez pour ajouter des points • Maintenez appuyé pour terminer');
+          setTimeout(_hideMapBanner, 3500);
+        }
+      });
+    })();
 
     // ── Patch Leaflet Draw edit handles: smaller squares (8×8) ──────────────
     // Override the default icon size used by L.Edit.PolyVerticesEdit
@@ -2370,77 +2479,116 @@
           catch(err) { alert('Erreur lors du zoom'); }
         });
 
-        // ── Zoom fenêtre — TAP-TAP mode (works perfectly on touch + mouse) ──
+        // ── Zoom fenêtre — DRAG mode (uses Leaflet's BoxZoom which works on mobile) ──
         const zwBtn = L.DomUtil.create('a', 'ctrl-btn', container);
         zwBtn.href = '#';
-        zwBtn.title = 'Zoom fenêtre — tapez 2 coins du rectangle';
+        zwBtn.title = 'Zoom fenêtre — glissez pour tracer un rectangle';
         zwBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="2" width="9" height="9" rx="1" stroke-dasharray="3,2"/><line x1="10" y1="10" x2="14" y2="14"/><circle cx="6.5" cy="6.5" r="3"/><line x1="8.7" y1="8.7" x2="10.5" y2="10.5"/></svg>';
-        let zwActive=false, zwP1=null, zwP2=null, zwP1Marker=null, zwRect=null;
 
-        function _zwReset() {
-          if (zwP1Marker) { map.removeLayer(zwP1Marker); zwP1Marker=null; }
-          if (zwRect)     { map.removeLayer(zwRect); zwRect=null; }
-          zwP1 = null; zwP2 = null;
+        let zwActive = false;
+        let zwStart = null;       // {x,y} container point
+        let zwRect  = null;       // visual rectangle div
+        let zwPointerId = null;
+
+        function _zwShowRect(x1, y1, x2, y2) {
+          if (!zwRect) {
+            zwRect = document.createElement('div');
+            zwRect.style.cssText = 'position:absolute;border:2px dashed #3498db;background:rgba(52,152,219,0.15);pointer-events:none;z-index:1000;';
+            map.getContainer().appendChild(zwRect);
+          }
+          const left = Math.min(x1, x2), top = Math.min(y1, y2);
+          const w = Math.abs(x2 - x1), h = Math.abs(y2 - y1);
+          zwRect.style.left = left + 'px';
+          zwRect.style.top  = top + 'px';
+          zwRect.style.width  = w + 'px';
+          zwRect.style.height = h + 'px';
         }
-        function _zwExit() {
+        function _zwHideRect() {
+          if (zwRect && zwRect.parentNode) zwRect.parentNode.removeChild(zwRect);
+          zwRect = null;
+        }
+        function _zwActivate() {
+          zwActive = true;
+          zwBtn.classList.add('active');
+          // Disable map interactions to capture pointer events cleanly
+          map.dragging.disable();
+          map.touchZoom.disable();
+          map.doubleClickZoom.disable();
+          map.scrollWheelZoom.disable();
+          if (map.tap) map.tap.disable();
+          map.getContainer().style.cursor = 'crosshair';
+          _showMapBanner('⬚ Glissez pour tracer un rectangle de zoom');
+        }
+        function _zwDeactivate() {
           zwActive = false;
           zwBtn.classList.remove('active');
-          _zwReset();
-          map.getContainer().style.cursor='';
+          map.dragging.enable();
+          map.touchZoom.enable();
+          map.doubleClickZoom.enable();
+          map.scrollWheelZoom.enable();
+          if (map.tap) map.tap.enable();
+          map.getContainer().style.cursor = '';
           _hideMapBanner();
-        }
-        function _zwBanner() {
-          if (!zwP1) _showMapBanner('⬚ Zoom fenêtre — tapez le 1er coin (Échap pour annuler)');
-          else       _showMapBanner('⬚ Zoom fenêtre — tapez le 2e coin (Échap pour annuler)');
+          _zwHideRect();
+          zwStart = null;
+          zwPointerId = null;
         }
 
-        // Activate / deactivate
         L.DomEvent.on(zwBtn, 'click', function(e) {
           L.DomEvent.preventDefault(e);
           L.DomEvent.stopPropagation(e);
-          zwActive = !zwActive;
-          zwBtn.classList.toggle('active', zwActive);
-          if (zwActive) {
-            map.getContainer().style.cursor = 'crosshair';
-            _zwBanner();
-          } else {
-            _zwExit();
-          }
+          if (zwActive) _zwDeactivate();
+          else          _zwActivate();
         });
 
-        // Use Leaflet's map.click — handles BOTH mouse & touch reliably
-        map.on('click', function(ev) {
+        // Pointer events — works for mouse, touch and stylus identically
+        const mc = map.getContainer();
+
+        function _zwPointerDown(ev) {
           if (!zwActive) return;
-          if (!zwP1) {
-            // First click: place corner 1
-            zwP1 = ev.latlng;
-            zwP1Marker = L.circleMarker(zwP1, {
-              radius:8, color:'#3498db', fillColor:'#3498db', fillOpacity:0.6, weight:2
-            }).addTo(map);
-            _zwBanner();
-          } else {
-            // Second click: zoom
-            zwP2 = ev.latlng;
-            const bounds = L.latLngBounds(zwP1, zwP2);
-            _zwExit();
-            if (bounds.isValid() && bounds.getNorthEast().distanceTo(bounds.getSouthWest()) > 5) {
-              map.fitBounds(bounds, {padding:[12,12]});
-            }
-          }
-        });
+          if (ev.target.closest('.leaflet-control')) return; // ignore on controls
+          const rect = mc.getBoundingClientRect();
+          zwStart = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+          zwPointerId = ev.pointerId;
+          try { mc.setPointerCapture(ev.pointerId); } catch(_){}
+          ev.preventDefault();
+          ev.stopPropagation();
+        }
 
-        // Live preview rectangle while moving toward 2nd corner
-        map.on('mousemove', function(ev) {
-          if (!zwActive || !zwP1) return;
-          if (zwRect) { map.removeLayer(zwRect); }
-          zwRect = L.rectangle([zwP1, ev.latlng], {
-            color:'#3498db', weight:2, fillOpacity:0.12, dashArray:'6,4', interactive:false
-          }).addTo(map);
-        });
+        function _zwPointerMove(ev) {
+          if (!zwActive || !zwStart) return;
+          if (zwPointerId !== null && ev.pointerId !== zwPointerId) return;
+          const rect = mc.getBoundingClientRect();
+          const cur = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+          _zwShowRect(zwStart.x, zwStart.y, cur.x, cur.y);
+          ev.preventDefault();
+        }
+
+        function _zwPointerUp(ev) {
+          if (!zwActive || !zwStart) return;
+          if (zwPointerId !== null && ev.pointerId !== zwPointerId) return;
+          const rect = mc.getBoundingClientRect();
+          const end = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+          const start = zwStart;
+          // Compute bounds before deactivating (which clears state)
+          const startLL = map.containerPointToLatLng(L.point(start.x, start.y));
+          const endLL   = map.containerPointToLatLng(L.point(end.x, end.y));
+          const bounds  = L.latLngBounds(startLL, endLL);
+          const dist    = Math.hypot(end.x - start.x, end.y - start.y);
+          _zwDeactivate();
+          if (dist > 15) {
+            map.fitBounds(bounds, {padding: [12,12]});
+          }
+        }
+
+        mc.addEventListener('pointerdown',   _zwPointerDown,   {passive: false, capture: true});
+        mc.addEventListener('pointermove',   _zwPointerMove,   {passive: false, capture: true});
+        mc.addEventListener('pointerup',     _zwPointerUp,     {capture: true});
+        mc.addEventListener('pointercancel', function(){ if (zwActive) _zwDeactivate(); }, {capture: true});
 
         // Escape to cancel
         document.addEventListener('keydown', function(e) {
-          if (zwActive && e.key === 'Escape') { _zwExit(); }
+          if (zwActive && e.key === 'Escape') { _zwDeactivate(); }
         });
 
         L.DomEvent.disableClickPropagation(container);
@@ -3898,23 +4046,25 @@
     let northArrowDragging = false;
 
     function makeDraggableOverlay(el) {
-      let sX, sY, sLeft, sTop;
-      el.addEventListener('mousedown', function(evt) {
+      el.style.touchAction = 'none';
+      let dragId = null, sX = 0, sY = 0, sLeft = 0, sTop = 0;
+      el.addEventListener('pointerdown', function(evt) {
         sX = evt.clientX; sY = evt.clientY;
         sLeft = el.offsetLeft; sTop = el.offsetTop;
-        const onMove = e => {
-          el.style.left = (sLeft + e.clientX - sX) + 'px';
-          el.style.top  = (sTop  + e.clientY - sY) + 'px';
-          el.style.right = ''; el.style.bottom = '';
-        };
-        const onUp = () => {
-          document.removeEventListener('mousemove', onMove);
-          document.removeEventListener('mouseup', onUp);
-        };
-        document.addEventListener('mousemove', onMove);
-        document.addEventListener('mouseup', onUp);
+        dragId = evt.pointerId;
+        try { el.setPointerCapture(evt.pointerId); } catch(_){}
         evt.preventDefault();
       });
+      el.addEventListener('pointermove', function(e) {
+        if (dragId === null || e.pointerId !== dragId) return;
+        el.style.left = (sLeft + e.clientX - sX) + 'px';
+        el.style.top  = (sTop  + e.clientY - sY) + 'px';
+        el.style.right = ''; el.style.bottom = '';
+        e.preventDefault();
+      });
+      function _end(e) { if (e && dragId !== null && e.pointerId !== dragId) return; dragId = null; }
+      el.addEventListener('pointerup', _end);
+      el.addEventListener('pointercancel', _end);
     }
     makeDraggableOverlay(northArrowEl);
 
@@ -5368,24 +5518,48 @@
       panel._dragInited = true;
       const header = panel.querySelector('.tool-panel-header');
       if (!header) return;
-      let sX, sY, sLeft, sTop;
-      header.addEventListener('mousedown', function(e) {
+      header.style.touchAction = 'none'; // prevent browser scrolling while dragging
+      header.style.cursor = 'move';
+
+      let sX = 0, sY = 0, sLeft = 0, sTop = 0, dragId = null;
+
+      header.addEventListener('pointerdown', function(e) {
         if (e.target.classList.contains('tool-panel-close')) return;
         sX = e.clientX; sY = e.clientY;
-        sLeft = panel.offsetLeft; sTop = panel.offsetTop;
-        function onMove(ev) {
-          panel.style.left = Math.max(0, sLeft + ev.clientX - sX) + 'px';
-          panel.style.top  = Math.max(0, sTop  + ev.clientY - sY) + 'px';
-          panel.style.right = 'auto'; panel.style.bottom = 'auto';
-        }
-        function onUp() {
-          document.removeEventListener('mousemove', onMove);
-          document.removeEventListener('mouseup', onUp);
-        }
-        document.addEventListener('mousemove', onMove);
-        document.addEventListener('mouseup', onUp);
+        const rect = panel.getBoundingClientRect();
+        const parent = panel.offsetParent || document.body;
+        const parentRect = parent.getBoundingClientRect();
+        sLeft = rect.left - parentRect.left;
+        sTop  = rect.top  - parentRect.top;
+        dragId = e.pointerId;
+        try { header.setPointerCapture(e.pointerId); } catch(_){}
         e.preventDefault();
       });
+      header.addEventListener('pointermove', function(e) {
+        if (dragId === null || e.pointerId !== dragId) return;
+        const newLeft = sLeft + e.clientX - sX;
+        const newTop  = sTop  + e.clientY - sY;
+        const parent = panel.offsetParent || document.body;
+        const parentW = parent.clientWidth;
+        const parentH = parent.clientHeight;
+        const panelW = panel.offsetWidth;
+        const panelH = panel.offsetHeight;
+        // Keep at least 30px of header visible on screen
+        const minLeft = 30 - panelW;
+        const maxLeft = parentW - 30;
+        const minTop = 0;
+        const maxTop = parentH - 30;
+        panel.style.left = Math.min(maxLeft, Math.max(minLeft, newLeft)) + 'px';
+        panel.style.top  = Math.min(maxTop,  Math.max(minTop,  newTop))  + 'px';
+        panel.style.right = 'auto'; panel.style.bottom = 'auto';
+        e.preventDefault();
+      });
+      function endDrag(e) {
+        if (e && dragId !== null && e.pointerId !== dragId) return;
+        dragId = null;
+      }
+      header.addEventListener('pointerup', endDrag);
+      header.addEventListener('pointercancel', endDrag);
     }
 
     function toggleToolPanel(panelId, container, btn) {
@@ -6294,21 +6468,33 @@
       if (!handle) handle = el;
       if (el._dragInit) return;
       el._dragInit = true;
-      let ox, oy, ol, ot;
       handle.style.cursor = 'move';
-      handle.addEventListener('mousedown', function(ev) {
-        ox=ev.clientX; oy=ev.clientY;
-        ol=el.offsetLeft; ot=el.offsetTop;
-        function mm(e) {
-          el.style.left = Math.max(0,ol+e.clientX-ox)+'px';
-          el.style.top  = Math.max(0,ot+e.clientY-oy)+'px';
-          el.style.right='auto'; el.style.bottom='auto';
-        }
-        function mu() { document.removeEventListener('mousemove',mm); document.removeEventListener('mouseup',mu); }
-        document.addEventListener('mousemove',mm);
-        document.addEventListener('mouseup',mu);
+      handle.style.touchAction = 'none';
+      let dragId = null, sX = 0, sY = 0, sL = 0, sT = 0;
+      handle.addEventListener('pointerdown', function(ev) {
+        if (ev.target && (ev.target.tagName === 'INPUT' || ev.target.tagName === 'BUTTON' ||
+                          ev.target.tagName === 'SELECT' || ev.target.tagName === 'TEXTAREA')) return;
+        sX = ev.clientX; sY = ev.clientY;
+        sL = el.offsetLeft; sT = el.offsetTop;
+        dragId = ev.pointerId;
+        try { handle.setPointerCapture(ev.pointerId); } catch(_){}
         ev.preventDefault();
       });
+      handle.addEventListener('pointermove', function(ev) {
+        if (dragId === null || ev.pointerId !== dragId) return;
+        const newL = sL + ev.clientX - sX;
+        const newT = sT + ev.clientY - sY;
+        const parent = el.offsetParent || document.body;
+        const maxL = parent.clientWidth - 40;
+        const maxT = parent.clientHeight - 40;
+        el.style.left = Math.min(maxL, Math.max(40 - el.offsetWidth, newL)) + 'px';
+        el.style.top  = Math.min(maxT, Math.max(0, newT)) + 'px';
+        el.style.right = 'auto'; el.style.bottom = 'auto';
+        ev.preventDefault();
+      });
+      function _end(ev) { if (ev && dragId !== null && ev.pointerId !== dragId) return; dragId = null; }
+      handle.addEventListener('pointerup', _end);
+      handle.addEventListener('pointercancel', _end);
     }
 
     // ══════════════════════════════════════════════
