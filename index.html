@@ -450,13 +450,11 @@
       position: absolute; top: -4px; left: -4px; width: 130%; height: 130%;
       opacity: 0; cursor: pointer; border: none; padding: 0;
     }
-    #map-wrap { flex: 1; position: relative; overflow: hidden; height: 100vh; }
-    #map { position: absolute; inset: 0; width: 100%; height: 100%; }
 
-    /* ── Sidebar: drag-only collapse, no button ── */
+    /* ── Sidebar (uses 100% of parent which is 100dvh) ── */
     #sidebar {
       width: 310px; min-width: 0; max-width: 520px;
-      height: 100vh; flex-shrink: 0;
+      height: 100%; flex-shrink: 0;
       background: #2c3e50; color: white;
       font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px;
       display: flex; flex-direction: column;
@@ -512,10 +510,20 @@
       padding: 12px 28px; font-size: 15px; font-weight: bold; cursor: pointer;
     }
 
-    /* ── Desktop layout ── */
+    /* ── Layout (uses 100dvh — dynamic viewport, accounts for browser chrome) ── */
     html, body { height: 100%; margin: 0; overflow: hidden; }
-    #webapp-root { display: flex; flex-direction: row; height: 100vh; width: 100vw; overflow: hidden; }
-    #map-wrap { flex: 1; position: relative; overflow: hidden; height: 100vh; }
+    #webapp-root {
+      display: flex; flex-direction: row;
+      width: 100vw;
+      height: 100vh;
+      height: 100dvh; /* dynamic viewport — true visible area on mobile */
+      overflow: hidden;
+    }
+    #map-wrap {
+      flex: 1; position: relative; overflow: hidden;
+      height: 100%; /* parent is 100dvh */
+      min-width: 0; /* allow flex to shrink */
+    }
     #map { position: absolute; inset: 0; width: 100%; height: 100%; }
 
     /* ── Sidebar reopen handle (always visible on left edge when sidebar hidden) ── */
@@ -542,7 +550,6 @@
     /* ── Touch action rules (critical for mobile gestures) ── */
     #map { touch-action: none; }
     #sidebar-body { touch-action: pan-y; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; }
-    body.sidebar-mobile-open #map { pointer-events: none !important; }
     body.edit-mode-active .leaflet-control-zoom { pointer-events: auto !important; }
 
     #mobile-scrim {
@@ -2251,95 +2258,77 @@
           catch(err) { alert('Erreur lors du zoom'); }
         });
 
-        // ── Zoom fenêtre ──
+        // ── Zoom fenêtre — TAP-TAP mode (works perfectly on touch + mouse) ──
         const zwBtn = L.DomUtil.create('a', 'ctrl-btn', container);
         zwBtn.href = '#';
-        zwBtn.title = 'Zoom fenêtre — dessinez un rectangle sur la carte pour zoomer dedans';
+        zwBtn.title = 'Zoom fenêtre — tapez 2 coins du rectangle';
         zwBtn.innerHTML = '<svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><rect x="2" y="2" width="9" height="9" rx="1" stroke-dasharray="3,2"/><line x1="10" y1="10" x2="14" y2="14"/><circle cx="6.5" cy="6.5" r="3"/><line x1="8.7" y1="8.7" x2="10.5" y2="10.5"/></svg>';
-        let zwActive = false, zwStart = null, zwRect = null;
-        let _zwPointerId = null;
+        let zwActive=false, zwP1=null, zwP2=null, zwP1Marker=null, zwRect=null;
 
-        // Disable/enable ALL map touch interactions (mobile requires this)
-        function _zwDisableMap() {
-          map.dragging.disable(); map.touchZoom.disable();
-          map.doubleClickZoom.disable(); map.scrollWheelZoom.disable();
-          map.boxZoom.disable(); map.keyboard.disable();
-          if (map.tap) map.tap.disable();
-          map.getContainer().style.cursor = 'crosshair';
-          map.getContainer().style.touchAction = 'none';
+        function _zwReset() {
+          if (zwP1Marker) { map.removeLayer(zwP1Marker); zwP1Marker=null; }
+          if (zwRect)     { map.removeLayer(zwRect); zwRect=null; }
+          zwP1 = null; zwP2 = null;
         }
-        function _zwEnableMap() {
-          map.dragging.enable(); map.touchZoom.enable();
-          map.doubleClickZoom.enable(); map.scrollWheelZoom.enable();
-          map.boxZoom.enable(); map.keyboard.enable();
-          if (map.tap) map.tap.enable();
-          map.getContainer().style.cursor = '';
-          map.getContainer().style.touchAction = '';
+        function _zwExit() {
+          zwActive = false;
+          zwBtn.classList.remove('active');
+          _zwReset();
+          map.getContainer().style.cursor='';
+          _hideMapBanner();
+        }
+        function _zwBanner() {
+          if (!zwP1) _showMapBanner('⬚ Zoom fenêtre — tapez le 1er coin (Échap pour annuler)');
+          else       _showMapBanner('⬚ Zoom fenêtre — tapez le 2e coin (Échap pour annuler)');
         }
 
+        // Activate / deactivate
         L.DomEvent.on(zwBtn, 'click', function(e) {
           L.DomEvent.preventDefault(e);
           L.DomEvent.stopPropagation(e);
           zwActive = !zwActive;
           zwBtn.classList.toggle('active', zwActive);
           if (zwActive) {
-            _zwDisableMap();
-            _showMapBanner('⬚ Zoom fenêtre — tracez un rectangle avec le doigt ou la souris');
+            map.getContainer().style.cursor = 'crosshair';
+            _zwBanner();
           } else {
-            _zwEnableMap();
-            _hideMapBanner();
-            if (zwRect) { map.removeLayer(zwRect); zwRect = null; }
-            zwStart = null; _zwPointerId = null;
+            _zwExit();
           }
         });
 
-        const mc = map.getContainer();
-
-        mc.addEventListener('pointerdown', function(ev) {
+        // Use Leaflet's map.click — handles BOTH mouse & touch reliably
+        map.on('click', function(ev) {
           if (!zwActive) return;
-          const rect = mc.getBoundingClientRect();
-          zwStart = map.containerPointToLatLng(L.point(ev.clientX - rect.left, ev.clientY - rect.top));
-          if (zwRect) map.removeLayer(zwRect);
-          zwRect = L.rectangle([zwStart, zwStart], {
-            color:'#3498db', weight:2, fillOpacity:0.12, dashArray:'6,4'
+          if (!zwP1) {
+            // First click: place corner 1
+            zwP1 = ev.latlng;
+            zwP1Marker = L.circleMarker(zwP1, {
+              radius:8, color:'#3498db', fillColor:'#3498db', fillOpacity:0.6, weight:2
+            }).addTo(map);
+            _zwBanner();
+          } else {
+            // Second click: zoom
+            zwP2 = ev.latlng;
+            const bounds = L.latLngBounds(zwP1, zwP2);
+            _zwExit();
+            if (bounds.isValid() && bounds.getNorthEast().distanceTo(bounds.getSouthWest()) > 5) {
+              map.fitBounds(bounds, {padding:[12,12]});
+            }
+          }
+        });
+
+        // Live preview rectangle while moving toward 2nd corner
+        map.on('mousemove', function(ev) {
+          if (!zwActive || !zwP1) return;
+          if (zwRect) { map.removeLayer(zwRect); }
+          zwRect = L.rectangle([zwP1, ev.latlng], {
+            color:'#3498db', weight:2, fillOpacity:0.12, dashArray:'6,4', interactive:false
           }).addTo(map);
-          _zwPointerId = ev.pointerId;
-          try { mc.setPointerCapture(ev.pointerId); } catch(e) {}
-          ev.preventDefault(); ev.stopPropagation();
-        }, {passive: false, capture: true});
+        });
 
-        mc.addEventListener('pointermove', function(ev) {
-          if (!zwActive || !zwStart || !zwRect) return;
-          if (_zwPointerId !== null && ev.pointerId !== _zwPointerId) return;
-          const rect = mc.getBoundingClientRect();
-          const latlng = map.containerPointToLatLng(L.point(ev.clientX - rect.left, ev.clientY - rect.top));
-          zwRect.setBounds(L.latLngBounds(zwStart, latlng));
-          ev.preventDefault();
-        }, {passive: false, capture: true});
-
-        mc.addEventListener('pointerup', function(ev) {
-          // CRITICAL: ignore pointerup if no pointerdown was captured (avoids button-click race)
-          if (!zwActive || !zwStart || _zwPointerId === null) return;
-          if (ev.pointerId !== _zwPointerId) return;
-          const rect   = mc.getBoundingClientRect();
-          const latlng = map.containerPointToLatLng(L.point(ev.clientX - rect.left, ev.clientY - rect.top));
-          const bounds = L.latLngBounds(zwStart, latlng);
-          if (zwRect) { map.removeLayer(zwRect); zwRect = null; }
-          zwStart = null; zwActive = false; _zwPointerId = null;
-          zwBtn.classList.remove('active');
-          _zwEnableMap();
-          _hideMapBanner();
-          if (bounds.isValid() && bounds.getNorthEast().distanceTo(bounds.getSouthWest()) > 10)
-            map.fitBounds(bounds, {padding: [4, 4]});
-          ev.preventDefault(); ev.stopPropagation();
-        }, {capture: true});
-
-        mc.addEventListener('pointercancel', function() {
-          if (!zwActive) return;
-          if (zwRect) { map.removeLayer(zwRect); zwRect = null; }
-          zwStart = null; zwActive = false; _zwPointerId = null;
-          zwBtn.classList.remove('active');
-          _zwEnableMap(); _hideMapBanner();
+        // Escape to cancel
+        document.addEventListener('keydown', function(e) {
+          if (zwActive && e.key === 'Escape') { _zwExit(); }
         });
 
         L.DomEvent.disableClickPropagation(container);
@@ -6779,69 +6768,90 @@
       sbUpdateEx();
     },600);
 
-    // ─── Sidebar toggle (desktop hide/show + mobile) ──────────────────────────
+    // ════════════════════════════════════════════════════════════════════
+    // UNIFIED SIDEBAR SYSTEM
+    // - Desktop: drag right edge to resize; drag below 100px = collapse
+    // - Mobile: slide-over overlay; tap hamburger or swipe right to open
+    // - Reopen tab always visible at left edge when collapsed
+    // ════════════════════════════════════════════════════════════════════
     let _sidebarCollapsed = false;
+    const COLLAPSE_THRESHOLD = 100;
 
-    // ════════════════════════════════════════════════════════════════════
-    // SIDEBAR — drag/swipe to open/close (NO button)
-    // ════════════════════════════════════════════════════════════════════
-    
-    const COLLAPSE_THRESHOLD = 100; // px — collapse if dragged narrower than this
+    function _isMobileSb() { return window.innerWidth <= 768; }
 
+    function _sbSyncReopenTab(collapsed) {
+      const tab = document.getElementById('sidebar-reopen-tab');
+      if (!tab) return;
+      tab.style.display = collapsed ? 'flex' : 'none';
+    }
+
+    function _sbApplyState(collapsed) {
+      const sb    = document.getElementById('sidebar');
+      const btn   = document.getElementById('sidebar-toggle');
+      const scrim = document.getElementById('mobile-scrim');
+      const ov    = document.getElementById('mob-overlay');
+      _sidebarCollapsed = collapsed;
+      const isMob = _isMobileSb();
+
+      if (collapsed) {
+        sb.classList.add('collapsed');
+        sb.classList.remove('mobile-open');
+        document.body.classList.add('sidebar-collapsed');
+        document.body.classList.remove('sidebar-mobile-open');
+        if (scrim) scrim.classList.remove('visible');
+        if (ov) ov.style.display = 'none';
+        if (btn) btn.textContent = '▶';
+        sb.style.width = ''; // let CSS rule kick in
+      } else {
+        sb.classList.remove('collapsed');
+        document.body.classList.remove('sidebar-collapsed');
+        if (isMob) {
+          sb.classList.add('mobile-open');
+          document.body.classList.add('sidebar-mobile-open');
+          if (scrim) scrim.classList.add('visible');
+          if (ov) ov.style.display = 'block';
+          sb.style.width = ''; // mobile uses CSS width
+        } else {
+          sb.classList.remove('mobile-open');
+          document.body.classList.remove('sidebar-mobile-open');
+          if (scrim) scrim.classList.remove('visible');
+          if (ov) ov.style.display = 'none';
+          sb.style.width = '310px';
+        }
+        if (btn) btn.textContent = '◀';
+      }
+      _sbSyncReopenTab(collapsed);
+      setTimeout(function(){ try{map.invalidateSize();}catch(e){} }, 280);
+    }
+
+    function _sbOpen()  { _sbApplyState(false); }
+    function _sbClose() { _sbApplyState(true); }
+    function toggleDesktopSidebar() { _sbApplyState(!_sidebarCollapsed); }
+    function closeMobileSidebar()   { _sbClose(); }
+
+    // ── Drag handle: desktop resize + drag-to-collapse ─────────────────────
     (function initSidebarDrag() {
       const sb     = document.getElementById('sidebar');
       const handle = document.getElementById('sidebar-resize-handle');
-      const scrim  = document.getElementById('mobile-scrim');
       if (!sb || !handle) return;
 
       let dragging=false, startX=0, startW=0;
 
-      function isMobile() { return window.innerWidth <= 768; }
-
-      function collapse() {
-        _sidebarCollapsed = true;
-        sb.style.width = '';
-        sb.classList.add('collapsed');
-        if (isMobile()) {
-          sb.classList.remove('mobile-open');
-          if (scrim) scrim.classList.remove('visible');
-        }
-        setTimeout(()=>map.invalidateSize(),300);
-      }
-
-      function expand(targetW) {
-        _sidebarCollapsed = false;
-        sb.classList.remove('collapsed');
-        const w = targetW || (isMobile() ? Math.min(window.innerWidth*0.8,320) : 310);
-        sb.style.width = w+'px';
-        if (isMobile()) {
-          sb.classList.add('mobile-open');
-          if (scrim) scrim.classList.add('visible');
-        }
-        setTimeout(()=>map.invalidateSize(),300);
-      }
-
-      // Pointer events on handle (works mouse + touch + pen)
       handle.addEventListener('pointerdown', function(e) {
-        if (!isMobile() || !_sidebarCollapsed) { // desktop drag or mobile expand
-          dragging=true; startX=e.clientX; startW=sb.offsetWidth||310;
-          handle.classList.add('dragging');
-          handle.setPointerCapture(e.pointerId);
-          document.body.style.userSelect='none';
-          e.preventDefault();
-        }
+        // On mobile, the handle is just visual; swipes happen on the sidebar body
+        if (_isMobileSb()) return;
+        dragging=true; startX=e.clientX; startW=sb.offsetWidth || 310;
+        handle.classList.add('dragging');
+        try { handle.setPointerCapture(e.pointerId); } catch(_){}
+        document.body.style.userSelect='none';
+        e.preventDefault();
       }, {passive:false});
 
       handle.addEventListener('pointermove', function(e) {
         if (!dragging) return;
-        const delta = e.clientX - startX;
-        const newW  = Math.max(0, startW + delta);
-        if (newW < COLLAPSE_THRESHOLD) {
-          sb.style.width = '0px';
-        } else {
-          sb.style.width = Math.min(520, newW)+'px';
-        }
-        map.invalidateSize();
+        const newW = Math.max(0, Math.min(520, startW + e.clientX - startX));
+        sb.style.width = newW+'px';
+        try { map.invalidateSize(); } catch(_){}
         e.preventDefault();
       }, {passive:false});
 
@@ -6851,94 +6861,45 @@
         handle.classList.remove('dragging');
         document.body.style.userSelect='';
         const finalW = sb.offsetWidth;
-        if (finalW < COLLAPSE_THRESHOLD) { collapse(); }
-        else { _sidebarCollapsed=false; sb.classList.remove('collapsed'); }
-        map.invalidateSize();
-      });
-
-      // Mobile swipe on map area to open/close sidebar
-      if (isMobile() || true) {
-        let swipeStartX=0, swipeStartY=0;
-        const mapWrap = document.getElementById('map-wrap');
-        if (mapWrap) {
-          mapWrap.addEventListener('pointerdown', function(e) {
-            swipeStartX=e.clientX; swipeStartY=e.clientY;
-          }, {passive:true});
-          mapWrap.addEventListener('pointerup', function(e) {
-            const dx=e.clientX-swipeStartX, dy=e.clientY-swipeStartY;
-            if (Math.abs(dx)<30||Math.abs(dy)>40) return; // not a horizontal swipe
-            if (!isMobile()) return;
-            if (dx>30 && _sidebarCollapsed) expand();   // swipe right → open
-            if (dx<-30 && !_sidebarCollapsed) collapse(); // swipe left → close
-          }, {passive:true});
+        if (finalW < COLLAPSE_THRESHOLD) {
+          _sbClose(); // properly syncs reopen tab
+        } else {
+          _sidebarCollapsed=false;
+          sb.classList.remove('collapsed');
+          document.body.classList.remove('sidebar-collapsed');
+          _sbSyncReopenTab(false);
         }
-      }
-
-      // Collapsed tab click (::after pseudo-element can't have click — add real overlay)
-      sb.addEventListener('click', function(e) {
-        if (_sidebarCollapsed && e.offsetX > (sb.offsetWidth-30)) expand();
+        try { map.invalidateSize(); } catch(_){}
       });
+      handle.addEventListener('pointercancel', function(){ dragging=false; handle.classList.remove('dragging'); });
     })();
 
-    function _sbSyncReopenTab(collapsed) {
-      const tab = document.getElementById('sidebar-reopen-tab');
-      if (!tab) return;
-      tab.style.display = collapsed ? 'flex' : 'none';
-    }
+    // ── Mobile: swipe LEFT inside sidebar to close ─────────────────────────
+    (function initSwipeClose() {
+      const sb = document.getElementById('sidebar');
+      if (!sb) return;
+      let sx=0, sy=0, st=0, watching=false;
+      sb.addEventListener('touchstart', function(e){
+        if (!_isMobileSb() || _sidebarCollapsed) return;
+        const t = e.touches[0];
+        sx = t.clientX; sy = t.clientY; st = Date.now(); watching=true;
+      }, {passive:true});
+      sb.addEventListener('touchend', function(e){
+        if (!watching) return; watching=false;
+        if (!_isMobileSb() || _sidebarCollapsed) return;
+        const t = e.changedTouches[0];
+        const dx = t.clientX - sx;
+        const dy = Math.abs(t.clientY - sy);
+        const dt = Date.now() - st;
+        if (dx < -50 && dy < 60 && dt < 500) _sbClose();
+      }, {passive:true});
+    })();
 
-    function closeMobileSidebar() {
-      const sb    = document.getElementById('sidebar');
-      const scrim = document.getElementById('mobile-scrim');
-      const ov    = document.getElementById('mob-overlay');
-      _sidebarCollapsed = true;
-      sb.classList.add('collapsed');
-      sb.classList.remove('mobile-open');
-      document.body.classList.add('sidebar-collapsed');
-      document.body.classList.remove('sidebar-mobile-open');
-      if (scrim) scrim.classList.remove('visible');
-      if (ov) ov.style.display = 'none';
-      _sbSyncReopenTab(true);
-      setTimeout(()=>{ try{map.invalidateSize();}catch(e){} }, 300);
-    }
+    // Set initial state on load
+    setTimeout(function(){ _sbApplyState(false); }, 100);
 
-    function toggleDesktopSidebar() {
-      const sb    = document.getElementById('sidebar');
-      const btn   = document.getElementById('sidebar-toggle');
-      const scrim = document.getElementById('mobile-scrim');
-      const ov    = document.getElementById('mob-overlay');
-      const isMob = window.innerWidth <= 768;
-      if (_sidebarCollapsed) {
-        // OPEN
-        _sidebarCollapsed = false;
-        sb.classList.remove('collapsed');
-        document.body.classList.remove('sidebar-collapsed');
-        _sbSyncReopenTab(false);
-        if (isMob) {
-          sb.classList.add('mobile-open');
-          document.body.classList.add('sidebar-mobile-open');
-          if (scrim) scrim.classList.add('visible');
-          if (ov) ov.style.display = 'block';
-        } else {
-          sb.style.width = '310px';
-          setTimeout(()=>{ try{map.invalidateSize();}catch(e){} }, 280);
-        }
-        if (btn) btn.textContent = '◀';
-      } else {
-        // CLOSE
-        _sidebarCollapsed = true;
-        sb.classList.add('collapsed');
-        sb.classList.remove('mobile-open');
-        document.body.classList.add('sidebar-collapsed');
-        document.body.classList.remove('sidebar-mobile-open');
-        _sbSyncReopenTab(true);
-        if (scrim) scrim.classList.remove('visible');
-        if (ov) ov.style.display = 'none';
-        setTimeout(()=>{ try{map.invalidateSize();}catch(e){} }, 280);
-        if (btn) btn.textContent = '▶';
-      }
-    }
 
-    // ── Swipe-right from left edge to open sidebar (mobile) ─────────────────
+    // ── Swipe-right from left edge to OPEN sidebar (mobile) ─────────────────
     (function() {
       let sw = {x: 0, y: 0, t: 0};
       document.addEventListener('touchstart', function(e) {
@@ -6951,9 +6912,8 @@
         const dx = t.clientX - sw.x;
         const dy = Math.abs(t.clientY - sw.y);
         const dt = Date.now() - sw.t;
-        // Swipe right: start ≤ 60px from left edge, horizontal, fast
         if (sw.x <= 60 && dx > 45 && dy < 80 && dt < 500) {
-          toggleDesktopSidebar();
+          _sbOpen();
         }
       }, {passive: true});
     })();
