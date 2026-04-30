@@ -518,24 +518,25 @@
     #map-wrap { flex: 1; position: relative; overflow: hidden; height: 100vh; }
     #map { position: absolute; inset: 0; width: 100%; height: 100%; }
 
-    /* ── Sidebar reopen handle (always visible on left edge, desktop + mobile) ── */
+    /* ── Sidebar reopen handle (always visible on left edge when sidebar hidden) ── */
     #sidebar-reopen-tab {
       position: fixed; top: 50%; left: 0;
       transform: translateY(-50%);
-      z-index: 1090; /* below sidebar (2000), but above map */
-      width: 20px; height: 56px;
+      z-index: 1500;
+      width: 28px; height: 72px;
       background: #2980b9; color: white;
-      border-radius: 0 8px 8px 0;
-      display: none; /* shown only when sidebar is collapsed */
+      border-radius: 0 10px 10px 0;
+      display: none;
       align-items: center; justify-content: center;
-      cursor: pointer; font-size: 14px; line-height: 1;
-      box-shadow: 2px 0 8px rgba(0,0,0,0.4);
+      cursor: pointer; font-size: 18px; line-height: 1;
+      box-shadow: 3px 0 12px rgba(0,0,0,0.5);
       user-select: none; -webkit-tap-highlight-color: transparent;
-      transition: background 0.15s;
+      transition: background 0.15s, width 0.15s;
     }
-    #sidebar-reopen-tab:hover, #sidebar-reopen-tab:active { background: #3498db; }
-    /* Show reopen tab only when sidebar is hidden */
-    #sidebar.collapsed ~ * #sidebar-reopen-tab { display: flex; }
+    #sidebar-reopen-tab:hover, #sidebar-reopen-tab:active {
+      background: #3498db; width: 32px;
+    }
+    /* Show only when body is marked as collapsed */
     body.sidebar-collapsed #sidebar-reopen-tab { display: flex; }
 
     /* ── Touch action rules (critical for mobile gestures) ── */
@@ -553,39 +554,80 @@
 
     /* ── Mobile: sidebar as slide-over overlay ── */
     @media (max-width: 768px) {
-      html, body { overflow: hidden; }
-      #webapp-root { flex-direction: row; width: 100vw; height: 100vh; overflow: hidden; }
+      html, body { overflow: hidden; height: 100%; }
+      body {
+        padding: env(safe-area-inset-top) env(safe-area-inset-right)
+                 env(safe-area-inset-bottom) env(safe-area-inset-left);
+      }
+      #webapp-root {
+        flex-direction: row;
+        width: 100vw;
+        height: 100vh; height: 100dvh;
+        overflow: hidden;
+      }
 
       /* Sidebar slides in as overlay */
       #sidebar {
         position: fixed; top: 0; left: 0; bottom: 0; z-index: 2000;
-        width: 80vw !important; max-width: 320px !important; min-width: 0 !important;
+        width: min(86vw, 340px) !important; max-width: 340px !important; min-width: 0 !important;
+        height: 100vh; height: 100dvh;
         transform: translateX(-100%);
         transition: transform 0.28s cubic-bezier(.4,0,.2,1);
         box-shadow: 4px 0 24px rgba(0,0,0,0.5);
         overflow: hidden;
+        display: flex; flex-direction: column;
       }
       #sidebar.mobile-open { transform: translateX(0); }
-      #sidebar-body { overflow-y: auto; -webkit-overflow-scrolling: touch; }
+      /* Critical: flex 1 1 auto with min-height 0 enables proper scroll inside flex */
+      #sidebar-body {
+        flex: 1 1 auto !important;
+        min-height: 0 !important;
+        overflow-y: auto !important;
+        -webkit-overflow-scrolling: touch !important;
+        padding-bottom: calc(80px + env(safe-area-inset-bottom)) !important;
+      }
 
-      #sidebar-toggle { display: none; } /* hide tab on mobile, use hamburger */
+      #sidebar-toggle { display: none !important; }
       #mob-ham { display: flex !important; }
-      /* Map takes full screen */
       #map-wrap { width: 100vw; }
 
-      /* All buttons: 48px min touch target */
+      /* All buttons 48px min touch target */
       .ctrl-btn, .leaflet-control a {
-        width: 44px !important; height: 44px !important;
-        line-height: 44px !important; font-size: 18px !important;
+        width: 48px !important; height: 48px !important;
+        line-height: 48px !important; font-size: 22px !important;
       }
-      .sb { min-height: 48px !important; padding: 12px !important; font-size: 14px !important; }
-      .si, .ss { font-size: 15px !important; padding: 10px !important; min-height: 44px !important; }
-      .sg-h { font-size: 14px !important; padding: 10px 12px !important; }
-      .s-tab { padding: 12px 4px !important; font-size: 12px !important; }
-      .tp-btn { min-height: 44px !important; padding: 10px !important; font-size: 13px !important; }
-
-      /* Map tools panel bigger on mobile */
+      .leaflet-control-zoom a {
+        width: 44px !important; height: 44px !important;
+        line-height: 44px !important; font-size: 22px !important;
+      }
+      .sb { min-height: 48px !important; padding: 13px !important; font-size: 15px !important; }
+      .si, .ss {
+        font-size: 16px !important; /* prevents iOS zoom on focus */
+        padding: 12px !important;
+        min-height: 46px !important;
+      }
+      .sg-h { font-size: 14px !important; padding: 12px 14px !important; }
+      .s-tab { padding: 14px 4px !important; font-size: 13px !important; min-height: 48px !important; }
+      .scrow label, .sl { font-size: 13px !important; }
+      .scheck { width: 22px !important; height: 22px !important; }
+      .leg-swatch { width: 28px !important; height: 28px !important; }
+      .tp-btn { min-height: 46px !important; padding: 11px !important; font-size: 14px !important; }
       #map-tools-panel .map-tool-btn { min-height: 48px !important; padding: 12px !important; }
+
+      /* Bigger reopen tab on mobile */
+      #sidebar-reopen-tab {
+        width: 32px !important; height: 80px !important; font-size: 22px !important;
+      }
+
+      /* Hamburger button bigger */
+      #mob-ham {
+        width: 50px !important; height: 50px !important;
+        font-size: 26px !important;
+        top: 12px !important; left: 12px !important;
+      }
+
+      #sidebar-resize-handle { width: 24px !important; }
+      #sidebar-resize-handle::after { content: ''; }
     }
 
     @media (min-width: 769px) {
@@ -1227,14 +1269,59 @@
       redoStack.length = 0;
     }
 
+    let _drawingActive = false; // true while user is actively drawing a shape
+
+    function _isDrawingOrEditing() {
+      try {
+        const dt = drawControl._toolbars && drawControl._toolbars.draw;
+        const et = drawControl._toolbars && drawControl._toolbars.edit;
+        const dActive = dt && dt._activeMode && dt._activeMode.handler;
+        const eActive = et && et._activeMode && et._activeMode.handler;
+        return !!(dActive || eActive || _drawingActive || _editModeActive);
+      } catch(e) { return false; }
+    }
+
     function undo() {
-      if (!undoStack.length) { alert('Rien à annuler'); return; }
+      // If user is mid-draw, cancel the current draw first
+      if (_isDrawingOrEditing()) {
+        try {
+          const dt = drawControl._toolbars && drawControl._toolbars.draw;
+          const et = drawControl._toolbars && drawControl._toolbars.edit;
+          if (dt && dt._activeMode && dt._activeMode.handler) {
+            dt._activeMode.handler.disable();
+          }
+          if (et && et._activeMode && et._activeMode.handler) {
+            et._activeMode.handler.save();
+            et._activeMode.handler.disable();
+          }
+          _drawingActive = false; _editModeActive = false;
+          document.body.classList.remove('draw-mode-active');
+          document.body.classList.remove('edit-mode-active');
+        } catch(e) {}
+      }
+      if (!undoStack.length) { _showMapBanner('Rien à annuler'); setTimeout(_hideMapBanner,1500); return; }
       redoStack.push(JSON.stringify(_captureState()));
       restoreState(JSON.parse(undoStack.pop()));
     }
 
     function redo() {
-      if (!redoStack.length) { alert('Rien à refaire'); return; }
+      if (_isDrawingOrEditing()) {
+        try {
+          const dt = drawControl._toolbars && drawControl._toolbars.draw;
+          const et = drawControl._toolbars && drawControl._toolbars.edit;
+          if (dt && dt._activeMode && dt._activeMode.handler) {
+            dt._activeMode.handler.disable();
+          }
+          if (et && et._activeMode && et._activeMode.handler) {
+            et._activeMode.handler.save();
+            et._activeMode.handler.disable();
+          }
+          _drawingActive = false; _editModeActive = false;
+          document.body.classList.remove('draw-mode-active');
+          document.body.classList.remove('edit-mode-active');
+        } catch(e) {}
+      }
+      if (!redoStack.length) { _showMapBanner('Rien à refaire'); setTimeout(_hideMapBanner,1500); return; }
       undoStack.push(JSON.stringify(_captureState()));
       restoreState(JSON.parse(redoStack.pop()));
     }
@@ -1699,9 +1786,9 @@
       onAdd: function () {
         const container = L.DomUtil.create('div', 'leaflet-bar leaflet-control');
         const undoBtn = L.DomUtil.create('a', 'ctrl-btn', container);
-        undoBtn.href='#'; undoBtn.title='Annuler (Ctrl+Z)'; undoBtn.innerHTML='↶';
+        undoBtn.href='#'; undoBtn.id='undo-btn'; undoBtn.title='Annuler (Ctrl+Z)'; undoBtn.innerHTML='↶';
         const redoBtn = L.DomUtil.create('a', 'ctrl-btn', container);
-        redoBtn.href='#'; redoBtn.title='Refaire (Ctrl+Y)'; redoBtn.innerHTML='↷';
+        redoBtn.href='#'; redoBtn.id='redo-btn'; redoBtn.title='Refaire (Ctrl+Y)'; redoBtn.innerHTML='↷';
         const delBtn = L.DomUtil.create('a', 'ctrl-btn', container);
         delBtn.href='#'; delBtn.id='delete-tool-btn';
         delBtn.title='Supprimer un objet — activez puis cliquez sur l\'objet (Échap pour annuler)';
@@ -1969,9 +2056,9 @@
         const btn = L.DomUtil.create('a', 'ctrl-btn', container);
         btn.href = '#';
         btn.title = 'Détecter les chevauchements — cliquez sur des polygones puis calculez';
-        btn.innerHTML = '⊗';
-        btn.style.fontWeight = 'bold';
-        btn.style.fontSize = '18px';
+        btn.innerHTML = '⛶';
+        btn.style.fontWeight = 'normal';
+        btn.style.fontSize = '20px';
 
         const calcBtn = L.DomUtil.create('a', 'ctrl-btn', container);
         calcBtn.href = '#';
@@ -2192,6 +2279,7 @@
 
         L.DomEvent.on(zwBtn, 'click', function(e) {
           L.DomEvent.preventDefault(e);
+          L.DomEvent.stopPropagation(e);
           zwActive = !zwActive;
           zwBtn.classList.toggle('active', zwActive);
           if (zwActive) {
@@ -2201,6 +2289,7 @@
             _zwEnableMap();
             _hideMapBanner();
             if (zwRect) { map.removeLayer(zwRect); zwRect = null; }
+            zwStart = null; _zwPointerId = null;
           }
         });
 
@@ -2217,7 +2306,7 @@
           _zwPointerId = ev.pointerId;
           try { mc.setPointerCapture(ev.pointerId); } catch(e) {}
           ev.preventDefault(); ev.stopPropagation();
-        }, {passive: false});
+        }, {passive: false, capture: true});
 
         mc.addEventListener('pointermove', function(ev) {
           if (!zwActive || !zwStart || !zwRect) return;
@@ -2226,10 +2315,12 @@
           const latlng = map.containerPointToLatLng(L.point(ev.clientX - rect.left, ev.clientY - rect.top));
           zwRect.setBounds(L.latLngBounds(zwStart, latlng));
           ev.preventDefault();
-        }, {passive: false});
+        }, {passive: false, capture: true});
 
         mc.addEventListener('pointerup', function(ev) {
-          if (!zwActive || !zwStart) return;
+          // CRITICAL: ignore pointerup if no pointerdown was captured (avoids button-click race)
+          if (!zwActive || !zwStart || _zwPointerId === null) return;
+          if (ev.pointerId !== _zwPointerId) return;
           const rect   = mc.getBoundingClientRect();
           const latlng = map.containerPointToLatLng(L.point(ev.clientX - rect.left, ev.clientY - rect.top));
           const bounds = L.latLngBounds(zwStart, latlng);
@@ -2240,7 +2331,8 @@
           _hideMapBanner();
           if (bounds.isValid() && bounds.getNorthEast().distanceTo(bounds.getSouthWest()) > 10)
             map.fitBounds(bounds, {padding: [4, 4]});
-        });
+          ev.preventDefault(); ev.stopPropagation();
+        }, {capture: true});
 
         mc.addEventListener('pointercancel', function() {
           if (!zwActive) return;
@@ -2617,6 +2709,15 @@
 
     // ─── Print extent mode flag (set before L.Draw.Rectangle starts) ─────────
     let printExtentMode = false;
+
+    map.on(L.Draw.Event.DRAWSTART, function() {
+      _drawingActive = true;
+      document.body.classList.add('draw-mode-active');
+    });
+    map.on(L.Draw.Event.DRAWSTOP, function() {
+      _drawingActive = false;
+      document.body.classList.remove('draw-mode-active');
+    });
 
     map.on(L.Draw.Event.CREATED, function (e) {
       // If clip draw mode is active, handle as clip boundary only
@@ -3457,7 +3558,7 @@
         const overlapBtnA = L.DomUtil.create('a', 'ctrl-btn', container);
         overlapBtnA.href='#'; overlapBtnA.id='overlap-tool-btn-a';
         overlapBtnA.title='Détecter les chevauchements — cliquez sur des polygones puis calculez';
-        overlapBtnA.innerHTML='⊗'; overlapBtnA.style.fontWeight='bold'; overlapBtnA.style.fontSize='18px';
+        overlapBtnA.innerHTML='⛶'; overlapBtnA.style.fontWeight='normal'; overlapBtnA.style.fontSize='20px';
         const calcBtnA = L.DomUtil.create('a', 'ctrl-btn', container);
         calcBtnA.href='#'; calcBtnA.id='overlap-calc-btn-a';
         calcBtnA.title='Calculer le chevauchement'; calcBtnA.innerHTML='✓';
@@ -4664,22 +4765,24 @@
 
     map.getContainer().addEventListener('mousemove', function(ev) {
       if (!_snapOn) return;
-      const rect = map.getContainer().getBoundingClientRect();
-      const cp   = L.point(ev.clientX - rect.left, ev.clientY - rect.top);
-      const verts = _snapCollectVertices();
-      let bestPt = null, bestD = 18; // 18px snap radius
-      verts.forEach(v => {
-        const d = cp.distanceTo(map.latLngToContainerPoint(v));
-        if (d < bestD) { bestD = d; bestPt = v; }
-      });
-      _snapPoint = bestPt;
-      if (bestPt) {
-        if (!_snapIndicator) _snapIndicator = L.marker(bestPt, { icon: _snapIndicatorIcon(), interactive: false, zIndexOffset: 9000 }).addTo(map);
-        else _snapIndicator.setLatLng(bestPt);
-        if (!map.hasLayer(_snapIndicator)) map.addLayer(_snapIndicator);
-      } else {
-        if (_snapIndicator && map.hasLayer(_snapIndicator)) map.removeLayer(_snapIndicator);
-      }
+      try {
+        const rect = map.getContainer().getBoundingClientRect();
+        const cp   = L.point(ev.clientX - rect.left, ev.clientY - rect.top);
+        const verts = _snapCollectVertices();
+        let bestPt = null, bestD = 18;
+        verts.forEach(v => {
+          const d = cp.distanceTo(map.latLngToContainerPoint(v));
+          if (d < bestD) { bestD = d; bestPt = v; }
+        });
+        _snapPoint = bestPt;
+        if (bestPt) {
+          if (!_snapIndicator) _snapIndicator = L.marker(bestPt, { icon: _snapIndicatorIcon(), interactive: false, zIndexOffset: 9000 }).addTo(map);
+          else _snapIndicator.setLatLng(bestPt);
+          if (!map.hasLayer(_snapIndicator)) map.addLayer(_snapIndicator);
+        } else {
+          if (_snapIndicator && map.hasLayer(_snapIndicator)) map.removeLayer(_snapIndicator);
+        }
+      } catch(err) { /* never break drawing */ }
     }, false);
 
     function toggleSnapping() {
