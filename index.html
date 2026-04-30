@@ -515,10 +515,66 @@
       height: 100%; width: 100%;
       margin: 0; padding: 0;
       overflow: hidden;
-      overflow-x: hidden; /* prevent any horizontal scroll */
+      overflow-x: hidden;
       -webkit-text-size-adjust: 100%;
     }
     *, *::before, *::after { box-sizing: border-box; }
+
+    /* ════════════════════════════════════════════════════════════════════
+       SCROLLABLE LEAFLET CONTROL COLUMNS
+       Each leaflet position container (top-left, top-right) becomes a
+       scrollable vertical bar so ALL buttons are reachable even when
+       there are more than fit on screen, and even when iOS browser
+       chrome shrinks the visible area.
+       ════════════════════════════════════════════════════════════════════ */
+    .leaflet-top.leaflet-left,
+    .leaflet-top.leaflet-right {
+      /* The top container becomes a flex column that fills the screen height
+         minus a safe top/bottom margin, then scrolls if its children overflow */
+      max-height: calc(100dvh - 20px - env(safe-area-inset-bottom)) !important;
+      max-height: calc(100vh  - 20px) !important; /* fallback */
+      overflow-y: auto !important;
+      overflow-x: hidden !important;
+      -webkit-overflow-scrolling: touch !important;
+      overscroll-behavior: contain !important;
+      pointer-events: auto !important;
+      touch-action: pan-y !important; /* allow vertical scroll, taps still work on children */
+      /* End margin so the last button isn't flush against the screen edge */
+      padding-bottom: calc(12px + env(safe-area-inset-bottom)) !important;
+    }
+    /* Hide scrollbar visually but keep functionality (mobile+desktop) */
+    .leaflet-top.leaflet-left::-webkit-scrollbar,
+    .leaflet-top.leaflet-right::-webkit-scrollbar {
+      width: 4px;
+    }
+    .leaflet-top.leaflet-left::-webkit-scrollbar-thumb,
+    .leaflet-top.leaflet-right::-webkit-scrollbar-thumb {
+      background: rgba(52,152,219,0.4);
+      border-radius: 2px;
+    }
+    .leaflet-top.leaflet-left::-webkit-scrollbar-track,
+    .leaflet-top.leaflet-right::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    /* Firefox */
+    .leaflet-top.leaflet-left,
+    .leaflet-top.leaflet-right {
+      scrollbar-width: thin;
+      scrollbar-color: rgba(52,152,219,0.4) transparent;
+    }
+
+    /* Subtle gradient hint at the bottom of column when content is scrollable */
+    .leaflet-top.leaflet-left::after,
+    .leaflet-top.leaflet-right::after {
+      content: '';
+      position: sticky;
+      bottom: 0; left: 0; right: 0;
+      display: block;
+      height: 16px;
+      pointer-events: none;
+      background: linear-gradient(to bottom, transparent, rgba(0,0,0,0.08));
+    }
+
     #webapp-root {
       display: flex; flex-direction: row;
       width: 100vw;
