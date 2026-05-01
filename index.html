@@ -332,14 +332,7 @@
     .map-tool-btn:hover  { background: #e0e4ea; border-color: #888; }
     .map-tool-btn.active { background: #27ae60; color: white; border-color: #1e8449; }
     .search-tool-sep { border: none; border-top: 1px solid #ddd; margin: 10px 0 4px; }
-    #search-panel {
-      display: none; position: absolute;
-      top: 50px; right: 50px; z-index: 1001;
-      background: white; border: 2px solid #888; border-radius: 6px;
-      padding: 12px 14px 14px; min-width: 240px;
-      box-shadow: 0 3px 12px rgba(0,0,0,0.3);
-      font-family: 'Segoe UI', Arial, sans-serif; overflow: visible;
-    }
+    /* #search-panel canonical definition below */
     #dtm-class-editor {
       display: none; position: fixed; z-index: 9000;
       background: #1e2d3d; border-radius: 10px; padding: 14px;
@@ -437,29 +430,7 @@
       cursor: pointer;
     }
 
-    /* ═══════════════ WEBAPP SIDEBAR ═══════════════ */
-    #sidebar {
-      width: 310px; min-width: 240px; max-width: 480px;
-      height: 100dvh; flex-shrink: 0;
-      background: #2c3e50; color: white;
-      font-family: 'Segoe UI', Arial, sans-serif; font-size: 13px;
-      display: flex; flex-direction: column;
-      border-right: 2px solid #1a252f;
-      box-sizing: border-box; overflow: hidden;
-      transition: width 0.25s ease, min-width 0.25s ease;
-      position: relative;
-    }
-    /* Drag handle on right edge of sidebar */
-    #sidebar-resize-handle {
-      position: absolute; top: 0; right: 0; width: 5px; height: 100%;
-      cursor: col-resize; background: transparent; z-index: 10;
-      transition: background 0.2s;
-    }
-    #sidebar-resize-handle:hover { background: rgba(52,152,219,0.4); }
-    #sidebar-resize-handle::after {
-      content: '⋮'; position: absolute; top: 50%; left: -4px;
-      transform: translateY(-50%); color: #4a6278; font-size: 16px; pointer-events: none;
-    }
+    /* ═══════════════ WEBAPP SIDEBAR (canonical block below at line ~517) ═══════════════ */
     #sidebar-tabs { display: flex; background: #243342; flex-shrink: 0; }
     .s-tab {
       flex: 1; padding: 10px 4px; text-align: center; cursor: pointer;
@@ -555,22 +526,7 @@
       box-shadow: 2px 0 8px rgba(0,0,0,0.4);
     }
 
-    /* ─── ORIENTATION WARNING (portrait on phone) ─── */
-    #orient-warn {
-      display: none; position: fixed; inset: 0; z-index: 99999;
-      background: #1e2d3d; color: #ecf0f1;
-      flex-direction: column; align-items: center; justify-content: center;
-      text-align: center; padding: 30px; font-family: 'Segoe UI', Arial, sans-serif;
-    }
-    #orient-warn.visible { display: flex; }
-    #orient-warn svg { margin-bottom: 20px; animation: _rotHint 1.5s infinite alternate ease-in-out; }
-    @keyframes _rotHint { from { transform: rotate(0deg); } to { transform: rotate(15deg); } }
-    #orient-warn h2 { font-size: 18px; margin: 0 0 10px; }
-    #orient-warn p  { font-size: 13px; color: #7f8c8d; margin: 0 0 20px; }
-    #orient-warn button {
-      background: #2980b9; color: white; border: none; border-radius: 8px;
-      padding: 12px 28px; font-size: 15px; font-weight: bold; cursor: pointer;
-    }
+    /* Portrait orientation is fully supported — no blocking overlay */
 
     /* ── Layout (uses 100dvh — dynamic viewport, accounts for browser chrome) ── */
     html, body {
@@ -811,6 +767,99 @@
       }
     }
 
+    /* ══════════════════════════════════════════════════════════════════
+       PORTRAIT / MOBILE RESPONSIVE OVERRIDES
+       All fixes for small screens, portrait mode, and touch devices
+       ══════════════════════════════════════════════════════════════════ */
+
+    /* ── Fix: hamburger button overlaps Leaflet top-left controls ── */
+    @media (max-width: 1024px) {
+      .leaflet-top.leaflet-left {
+        padding-top: 62px !important; /* clear the 44px hamburger at top:10px */
+      }
+    }
+
+    /* ── Fix: search panel position on narrow phones ── */
+    @media (max-width: 1024px) {
+      #search-panel {
+        left: 12px !important;
+        right: 12px !important;
+        top: 72px !important;
+        min-width: 0 !important;
+        width: auto !important;
+      }
+    }
+
+    /* ── Fix: dtm-class-editor hardcoded 320px width ── */
+    #dtm-class-editor {
+      max-width: calc(100vw - 24px) !important;
+      width: min(320px, calc(100vw - 24px)) !important;
+    }
+
+    /* ── Fix: elevation container too tall on portrait phones ── */
+    @media (max-width: 1024px) and (orientation: portrait) {
+      #elevation-container { height: 160px !important; }
+    }
+
+    /* ── Tool panels → Bottom Sheets on mobile ── */
+    /* On touch/mobile: floating panels become bottom sheets for easy thumb access */
+    @media (max-width: 1024px) {
+      .tool-panel {
+        position: fixed !important;
+        top: auto !important;
+        bottom: 0 !important;
+        left: 0 !important;
+        right: 0 !important;
+        width: 100% !important;
+        max-width: 100% !important;
+        max-height: 72dvh !important;
+        border-radius: 20px 20px 0 0 !important;
+        box-shadow: 0 -8px 40px rgba(0,0,0,0.6) !important;
+        z-index: 6000 !important;
+      }
+      .tool-panel-header {
+        border-radius: 20px 20px 0 0 !important;
+        cursor: default !important;
+        padding-top: 14px !important;
+      }
+      /* Drag pill indicator at top of bottom sheet */
+      .tool-panel-header::before {
+        content: '';
+        position: absolute;
+        top: 7px;
+        left: 50%;
+        transform: translateX(-50%);
+        width: 40px;
+        height: 4px;
+        background: rgba(255,255,255,0.2);
+        border-radius: 2px;
+      }
+      .tool-panel-header { position: relative; }
+      .tool-panel-body {
+        padding-bottom: calc(16px + env(safe-area-inset-bottom)) !important;
+      }
+    }
+
+    /* ── Bottom sheet scrim (dims map when a tool panel is open) ── */
+    #tool-panel-scrim {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.45);
+      z-index: 5999;
+      -webkit-tap-highlight-color: transparent;
+    }
+    #tool-panel-scrim.visible { display: block; }
+
+    /* ── Safe area: Leaflet bottom-right controls (iPhone home indicator) ── */
+    @media (max-width: 1024px) {
+      .leaflet-bottom.leaflet-right {
+        padding-bottom: calc(6px + env(safe-area-inset-bottom)) !important;
+      }
+      .leaflet-bottom.leaflet-left {
+        padding-bottom: calc(6px + env(safe-area-inset-bottom)) !important;
+      }
+    }
+
     /* ── Touch-device specific (pointer:coarse) — applies to ANY touch device, even big tablets ── */
     @media (pointer: coarse) {
       .ctrl-btn, .leaflet-control a, .leaflet-draw-toolbar a {
@@ -865,21 +914,11 @@
   </style>
 </head>
 <body>
-<!-- Mobile menu button (only visible on small screens) -->
-<!-- Orientation warning (portrait on phone) -->
-<div id="orient-warn">
-  <svg width="80" height="80" viewBox="0 0 80 80" fill="none">
-    <rect x="10" y="5" width="28" height="50" rx="5" stroke="#ecf0f1" stroke-width="3"/>
-    <rect x="15" y="25" width="50" height="28" rx="5" stroke="#3498db" stroke-width="3"/>
-    <path d="M55 18 L62 25 L55 32" stroke="#3498db" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
-  </svg>
-  <h2>Tournez votre appareil</h2>
-  <p>Pour une expérience optimale, utilisez l'application en mode <strong>paysage</strong> (horizontal).</p>
-  <button onclick="document.getElementById('orient-warn').classList.remove('visible')">OK — Continuer quand même</button>
-</div>
 
 <!-- Mobile scrim (tap outside sidebar to close) -->
 <div id="mobile-scrim" onclick="closeMobileSidebar()"></div>
+<!-- Tool panel bottom-sheet scrim (mobile) -->
+<div id="tool-panel-scrim" onclick="_closeAllToolPanels()"></div>
 
 <!-- Mobile hamburger button (fixed, top-left, only visible on phones) -->
 <button id="mob-ham" aria-label="Ouvrir le panneau"
@@ -5515,6 +5554,16 @@
     // TOOL PANELS — helper + DTM + Georeference + Clip
     // ═══════════════════════════════════════════════════════════════════
 
+    // ── Close all tool panels (used by mobile scrim tap) ─────────────────────
+    function _closeAllToolPanels() {
+      ['dtm-panel','georef-panel','clip-panel'].forEach(id => {
+        document.getElementById(id).classList.remove('visible');
+      });
+      Object.values(_toolPanelCtrlBtns).forEach(b => b && b.classList.remove('active'));
+      const scrim = document.getElementById('tool-panel-scrim');
+      if (scrim) scrim.classList.remove('visible');
+    }
+
     // ── Generic panel toggle ──────────────────────────────────────────
     const _toolPanelCtrlBtns = {};
 
@@ -5581,21 +5630,32 @@
       Object.values(_toolPanelCtrlBtns).forEach(b => b && b.classList.remove('active'));
 
       if (!isVisible) {
-        // Position: prefer right of button, clamp to map bounds
-        const panelW = 260;
-        let left = btnRect.right - mapRect.left + 8;
-        let top  = btnRect.top  - mapRect.top;
-        if (left + panelW > mapRect.width - 10) left = Math.max(0, btnRect.left - mapRect.left - panelW - 8);
-        if (top + 300 > mapRect.height) top = Math.max(0, mapRect.height - 320);
-        panel.style.left = left + 'px';
-        panel.style.top  = top  + 'px';
-        panel.style.right = 'auto'; panel.style.bottom = 'auto';
+        // On mobile: CSS bottom-sheet handles layout; skip JS positioning
+        if (!_isMobileSb()) {
+          const panelW = 260;
+          let left = btnRect.right - mapRect.left + 8;
+          let top  = btnRect.top  - mapRect.top;
+          if (left + panelW > mapRect.width - 10) left = Math.max(0, btnRect.left - mapRect.left - panelW - 8);
+          if (top + 300 > mapRect.height) top = Math.max(0, mapRect.height - 320);
+          panel.style.left = left + 'px';
+          panel.style.top  = top  + 'px';
+          panel.style.right = 'auto'; panel.style.bottom = 'auto';
+        } else {
+          // Reset any desktop position so CSS bottom-sheet takes over
+          panel.style.left = ''; panel.style.top = '';
+          panel.style.right = ''; panel.style.bottom = '';
+        }
         panel.classList.add('visible');
         btn.classList.add('active');
         _toolPanelCtrlBtns[panelId] = btn;
-        _makeToolPanelDraggable(panel);
+        if (!_isMobileSb()) _makeToolPanelDraggable(panel);
+        // Show scrim on mobile
+        const scrim = document.getElementById('tool-panel-scrim');
+        if (scrim && _isMobileSb()) scrim.classList.add('visible');
       } else {
         btn.classList.remove('active');
+        const scrim = document.getElementById('tool-panel-scrim');
+        if (scrim) scrim.classList.remove('visible');
       }
     }
 
@@ -5607,6 +5667,8 @@
       document.getElementById('dtm-panel').classList.remove('visible');
       const b = document.getElementById('dtm-tool-btn');
       if (b) b.classList.remove('active');
+      const scrim = document.getElementById('tool-panel-scrim');
+      if (scrim) scrim.classList.remove('visible');
       deactivateDtmSelect();
     }
 
@@ -6519,6 +6581,8 @@
       document.getElementById('georef-panel').classList.remove('visible');
       const b = document.getElementById('georef-tool-btn');
       if (b) b.classList.remove('active');
+      const scrim = document.getElementById('tool-panel-scrim');
+      if (scrim) scrim.classList.remove('visible');
     }
 
     // Wire georef file loading via a dynamically-created input (avoids display:none issues)
@@ -7063,6 +7127,8 @@
     function closeClipPanel() {
       document.getElementById('clip-panel').classList.remove('visible');
       const b = document.getElementById('clip-tool-btn'); if (b) b.classList.remove('active');
+      const scrim = document.getElementById('tool-panel-scrim');
+      if (scrim) scrim.classList.remove('visible');
       clipReset();
     }
 
@@ -7210,6 +7276,32 @@
     setTimeout(function(){ _sbApplyState(false); }, 100);
 
 
+    // ── Swipe-down on tool panel bottom sheet headers to close (mobile) ─────
+    (function() {
+      document.querySelectorAll('.tool-panel-header').forEach(function(header) {
+        let sy = 0, tracking = false;
+        header.addEventListener('touchstart', function(e) {
+          if (!_isMobileSb()) return;
+          sy = e.touches[0].clientY; tracking = true;
+        }, {passive: true});
+        header.addEventListener('touchend', function(e) {
+          if (!tracking || !_isMobileSb()) return;
+          tracking = false;
+          const dy = e.changedTouches[0].clientY - sy;
+          if (dy > 60) {
+            // Swipe down — close whichever panel this header belongs to
+            const panel = header.closest('.tool-panel');
+            if (panel) {
+              panel.classList.remove('visible');
+              Object.values(_toolPanelCtrlBtns).forEach(b => b && b.classList.remove('active'));
+              const scrim = document.getElementById('tool-panel-scrim');
+              if (scrim) scrim.classList.remove('visible');
+            }
+          }
+        }, {passive: true});
+      });
+    })();
+
     // ── Swipe-right from left edge to OPEN sidebar (mobile) ─────────────────
     (function() {
       let sw = {x: 0, y: 0, t: 0};
@@ -7229,21 +7321,7 @@
       }, {passive: true});
     })();
 
-    // ── Orientation warning ────────────────────────────────────────────────────
-    function _checkOrientation() {
-      const warn = document.getElementById('orient-warn');
-      if (!warn) return;
-      const isMobileDevice = window.innerWidth <= 1024 || 'ontouchstart' in window;
-      const isPortrait = window.innerHeight > window.innerWidth;
-      if (isMobileDevice && isPortrait) {
-        warn.classList.add('visible');
-      } else {
-        warn.classList.remove('visible');
-      }
-    }
-    window.addEventListener('orientationchange', ()=>setTimeout(_checkOrientation,200));
-    window.addEventListener('resize', _checkOrientation);
-    setTimeout(_checkOrientation, 300); // check on load
+    // Portrait orientation fully supported — no blocking check needed.
   </script>
 </body>
 </html>
