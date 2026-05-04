@@ -209,11 +209,55 @@
       .maplibregl-ctrl-group button { width: 44px !important; height: 44px !important; }
     }
 
-    /* terra-draw control dark theme */
-    .maplibregl-terradraw-render-button-control,
-    .maplibregl-terradraw-add-control button {
-      background: var(--bg-2) !important;
-      border: 1px solid var(--line) !important;
+    /* ════════════════════════════════════════════════════════════════
+       terra-draw control — dark theme styling
+
+       The library outputs <button> elements with class names like
+       .maplibregl-terradraw-render-button, .maplibregl-terradraw-add-*-button,
+       and uses CSS background-image SVGs colored #5f6368 (medium grey) which
+       are invisible on our dark background. We:
+         1. give the buttons a dark surface that contrasts with the map
+         2. invert+brighten the SVG icons so they show up white/light
+         3. style the active/disabled states to match our palette
+       ════════════════════════════════════════════════════════════════ */
+    .maplibregl-terradraw-render-button,
+    .maplibregl-terradraw-add-control,
+    button[class*="maplibregl-terradraw-"] {
+      background-color: var(--bg-2) !important;
+      width: 36px !important;
+      height: 36px !important;
+      /* Invert the dark grey icons to light, then tint slightly toward our palette. */
+      filter: invert(0.85) brightness(1.1) hue-rotate(180deg);
+    }
+    button[class*="maplibregl-terradraw-"]:hover {
+      background-color: var(--bg-3) !important;
+    }
+    /* Active state — yellow background from the library; we use our brand instead.
+       Need to override at high specificity because the library's CSS has an
+       explicit background-color rule. */
+    .maplibregl-terradraw-add-control.active {
+      background-color: var(--brand) !important;
+      filter: invert(1) brightness(2);
+    }
+    /* Disabled state — keep visible but dim. */
+    button[class*="maplibregl-terradraw-"]:disabled {
+      opacity: 0.4;
+      cursor: not-allowed;
+    }
+    /* The whole control group (parent) — already styled by the global
+       .maplibregl-ctrl-group rule above. We just need to ensure no hidden
+       overflow on the button column. */
+    .maplibregl-ctrl-group:has(button[class*="maplibregl-terradraw-"]) {
+      overflow: visible;
+    }
+    /* Make the touch area bigger on mobile. */
+    @media (max-width: 1024px) {
+      .maplibregl-terradraw-render-button,
+      .maplibregl-terradraw-add-control,
+      button[class*="maplibregl-terradraw-"] {
+        width: 44px !important;
+        height: 44px !important;
+      }
     }
 
     /* ═════ FLOATING TOOLS ═════ */
@@ -698,13 +742,22 @@
   var gridState = { enabled: false, crs: 'wgs84', spacing: 0, showLabels: true };
 
   /* ═══ 1. PROJECTIONS ════════════════════════════════════════════════════════ */
-  // Lambert Maroc Zone 1 — paramètres exacts repris de l'application historique.
+  // EPSG:26191 — Merchich / Nord Maroc (Lambert Zone 1)
+  // Paramètres exacts copiés de l'app v49 :
+  //   +proj=lcc +lat_1=33.3 +lat_0=33.3 +lon_0=-5.4 +k_0=0.999625769
+  //   +x_0=500000 +y_0=300000 +ellps=clrk80ign +towgs84=31,146,47,0,0,0,0
   proj4.defs(
     'lambert-maroc-1',
-    '+proj=lcc +lat_1=33 +lat_0=33 +lon_0=-5 +k_0=0.999625769 ' +
-    '+x_0=500000 +y_0=300000 +a=6378249.2 +b=6356515 ' +
+    '+proj=lcc +lat_1=33.3 +lat_0=33.3 +lon_0=-5.4 +k_0=0.999625769 ' +
+    '+x_0=500000 +y_0=300000 +ellps=clrk80ign ' +
     '+towgs84=31,146,47,0,0,0,0 +units=m +no_defs'
   );
+  // Also register the EPSG alias used in the original app, in case any
+  // imported file references it.
+  proj4.defs('EPSG:26191', proj4.defs('lambert-maroc-1'));
+  // Register lowercase 'wgs84' as alias for proj4's built-in WGS84 — our app
+  // uses lowercase ID for consistency with the CRS_LIST.
+  proj4.defs('wgs84', proj4.defs('WGS84'));
 
   const CRS_LIST = [
     { id: 'wgs84', label: 'GPS (WGS84)', isGeographic: true, axes: ['Longitude', 'Latitude'] },
@@ -931,8 +984,28 @@
           tileSize: 256,
           attribution: 'Tiles © Esri — World Imagery',
         },
+        // Transparent overlay with city names, road labels, etc.
+        // This is the "Reference / Boundaries and Places" layer designed
+        // specifically to be combined with World Imagery.
+        'esri-labels': {
+          type: 'raster',
+          tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}'],
+          tileSize: 256,
+          attribution: 'Labels © Esri',
+        },
+        // Transportation overlay for roads and routes.
+        'esri-transportation': {
+          type: 'raster',
+          tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}'],
+          tileSize: 256,
+          attribution: 'Roads © Esri',
+        },
       },
-      layers: [{ id: 'esri-imagery', type: 'raster', source: 'esri', minzoom: 0, maxzoom: 22 }],
+      layers: [
+        { id: 'esri-imagery', type: 'raster', source: 'esri', minzoom: 0, maxzoom: 22 },
+        { id: 'esri-roads', type: 'raster', source: 'esri-transportation', minzoom: 0, maxzoom: 22 },
+        { id: 'esri-labels', type: 'raster', source: 'esri-labels', minzoom: 0, maxzoom: 22 },
+      ],
     },
   };
 
@@ -960,12 +1033,20 @@
 
   // Live coords status bar (desktop)
   map.on('mousemove', (e) => {
-    const { lng, lat } = e.lngLat;
-    document.getElementById('sb-lon').textContent = lng.toFixed(6) + '°';
-    document.getElementById('sb-lat').textContent = lat.toFixed(6) + '°';
-    const [x, y] = reproject([lng, lat], 'wgs84', 'lambert-maroc-1');
-    document.getElementById('sb-x').textContent = formatProjected(x, 1);
-    document.getElementById('sb-y').textContent = formatProjected(y, 1);
+    try {
+      const { lng, lat } = e.lngLat;
+      const sbLon = document.getElementById('sb-lon');
+      const sbLat = document.getElementById('sb-lat');
+      const sbX = document.getElementById('sb-x');
+      const sbY = document.getElementById('sb-y');
+      if (sbLon) sbLon.textContent = lng.toFixed(6) + '°';
+      if (sbLat) sbLat.textContent = lat.toFixed(6) + '°';
+      const [x, y] = reproject([lng, lat], 'wgs84', 'lambert-maroc-1');
+      if (sbX) sbX.textContent = formatProjected(x, 1);
+      if (sbY) sbY.textContent = formatProjected(y, 1);
+    } catch (err) {
+      console.warn('[HydraulicGIS] mousemove update failed:', err);
+    }
   });
 
   // Terra-draw control
@@ -1007,6 +1088,7 @@
       id: 'app-label', type: 'symbol', source: SRC_LABELS,
       layout: {
         'text-field': ['get', 'name'],
+        'text-font': ['Open Sans Regular', 'Arial Unicode MS Regular'],
         'text-size': 12,
         'text-offset': [0, 1.2],
         'text-anchor': 'top',
@@ -1072,19 +1154,34 @@
         open: true,
       });
       map.addControl(drawControl, 'top-left');
+      console.info('[HydraulicGIS] terra-draw control added.');
 
       // Subscribe to terra-draw events to push features into our store.
       const td = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
-      if (td && td.on) {
+      if (td && typeof td.on === 'function') {
         td.on('finish', (id, ctx) => {
-          const snap = td.getSnapshot();
-          const f = snap.find(x => x.id === id);
-          if (!f) return;
-          const mode = (f.properties && f.properties.mode) || (ctx && ctx.mode) || '';
-          const kind = kindFromGeom(f.geometry, mode);
-          addFeature({ type: 'Feature', geometry: f.geometry, properties: {} }, kind);
-          try { td.removeFeatures([id]); } catch (e) {}
+          try {
+            console.info('[HydraulicGIS] terra-draw finish:', id, ctx);
+            const snap = td.getSnapshot();
+            const f = snap.find(x => x.id === id);
+            if (!f) {
+              console.warn('[HydraulicGIS] feature', id, 'not in snapshot, ignoring');
+              return;
+            }
+            const mode = (f.properties && f.properties.mode) || (ctx && ctx.mode) || '';
+            const kind = kindFromGeom(f.geometry, mode);
+            const newF = addFeature({ type: 'Feature', geometry: f.geometry, properties: {} }, kind);
+            console.info('[HydraulicGIS] added feature', newF.id, 'kind=' + kind);
+            // Remove the original from terra-draw so it doesn't double-render.
+            try { td.removeFeatures([id]); } catch (err) {
+              console.warn('[HydraulicGIS] removeFeatures failed:', err);
+            }
+          } catch (err) {
+            console.error('[HydraulicGIS] error in finish handler:', err);
+          }
         });
+      } else {
+        console.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
     } catch (e) {
       console.error('[HydraulicGIS] Échec d\'initialisation de terra-draw :', e);
