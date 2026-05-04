@@ -4,6 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no" />
   <meta name="theme-color" content="#0b0f14" />
+  <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
   <title>Hydraulic GIS</title>
@@ -212,48 +213,37 @@
     /* ════════════════════════════════════════════════════════════════
        terra-draw control — dark theme styling
 
-       The library outputs <button> elements with class names like
-       .maplibregl-terradraw-render-button, .maplibregl-terradraw-add-*-button,
-       and uses CSS background-image SVGs colored #5f6368 (medium grey) which
-       are invisible on our dark background. We:
-         1. give the buttons a dark surface that contrasts with the map
-         2. invert+brighten the SVG icons so they show up white/light
-         3. style the active/disabled states to match our palette
+       The library renders <button> elements whose SVG icons use fill="#5f6368"
+       (medium grey) — invisible on our dark background. We:
+         1. give buttons a dark surface that contrasts with the map
+         2. invert the SVG icons so they appear white on dark
+         3. style active/disabled states to match our palette
        ════════════════════════════════════════════════════════════════ */
-    .maplibregl-terradraw-render-button,
-    .maplibregl-terradraw-add-control,
     button[class*="maplibregl-terradraw-"] {
       background-color: var(--bg-2) !important;
       width: 36px !important;
       height: 36px !important;
-      /* Invert the dark grey icons to light, then tint slightly toward our palette. */
-      filter: invert(0.85) brightness(1.1) hue-rotate(180deg);
+      border: none !important;
     }
     button[class*="maplibregl-terradraw-"]:hover {
       background-color: var(--bg-3) !important;
     }
-    /* Active state — yellow background from the library; we use our brand instead.
-       Need to override at high specificity because the library's CSS has an
-       explicit background-color rule. */
-    .maplibregl-terradraw-add-control.active {
-      background-color: var(--brand) !important;
-      filter: invert(1) brightness(2);
+    /* Invert the dark grey icons to bright white so they're visible. */
+    button[class*="maplibregl-terradraw-"]:not(.active) {
+      filter: invert(1) brightness(1.5);
     }
-    /* Disabled state — keep visible but dim. */
+    /* Active state: brand-blue background, white icon (no inversion needed). */
+    button.maplibregl-terradraw-add-control.active {
+      background-color: var(--brand) !important;
+      filter: brightness(8) !important;
+    }
+    /* Disabled state: dim and not clickable. */
     button[class*="maplibregl-terradraw-"]:disabled {
-      opacity: 0.4;
+      opacity: 0.35;
       cursor: not-allowed;
     }
-    /* The whole control group (parent) — already styled by the global
-       .maplibregl-ctrl-group rule above. We just need to ensure no hidden
-       overflow on the button column. */
-    .maplibregl-ctrl-group:has(button[class*="maplibregl-terradraw-"]) {
-      overflow: visible;
-    }
-    /* Make the touch area bigger on mobile. */
+    /* Bigger touch targets on mobile. */
     @media (max-width: 1024px) {
-      .maplibregl-terradraw-render-button,
-      .maplibregl-terradraw-add-control,
       button[class*="maplibregl-terradraw-"] {
         width: 44px !important;
         height: 44px !important;
@@ -1070,9 +1060,13 @@
     });
     map.addLayer({
       id: 'app-line', type: 'line', source: SRC_LINES,
+      layout: {
+        'line-cap': 'round',
+        'line-join': 'round',
+      },
       paint: {
-        'line-color': ['get', 'stroke'], 'line-width': ['get', 'strokeWidth'],
-        'line-cap': 'round', 'line-join': 'round',
+        'line-color': ['get', 'stroke'],
+        'line-width': ['get', 'strokeWidth'],
       },
     });
     map.addLayer({
