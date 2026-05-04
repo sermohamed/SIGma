@@ -966,7 +966,7 @@
     light: 'https://basemaps.cartocdn.com/gl/positron-gl-style/style.json',
     satellite: {
       version: 8,
-      glyphs: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/glyphs/{fontstack}/{range}.pbf',
+      glyphs: 'https://demotiles.maplibre.org/font/{fontstack}/{range}.pbf',
       sources: {
         esri: {
           type: 'raster',
@@ -1082,7 +1082,7 @@
       id: 'app-label', type: 'symbol', source: SRC_LABELS,
       layout: {
         'text-field': ['get', 'name'],
-        'text-font': ['Open Sans Regular', 'Arial Unicode MS Regular'],
+        'text-font': ['Noto Sans Regular'],
         'text-size': 12,
         'text-offset': [0, 1.2],
         'text-anchor': 'top',
@@ -1150,7 +1150,31 @@
       map.addControl(drawControl, 'top-left');
       console.info('[HydraulicGIS] terra-draw control added.');
 
-      // Subscribe to terra-draw events to push features into our store.
+      // After terra-draw renders its layers (td-point, td-linestring, td-polygon),
+      // we keep them — features need to live there for Select/Delete buttons to work —
+      // but make them visually invisible so only OUR styled layers show. Our layers
+      // (app-poly-fill etc.) are added BEFORE terra-draw, so terra-draw's are on top
+      // by default; we hide them by setting opacity to 0.
+      function hideTerraDrawLayers() {
+        const layerIds = ['td-polygon', 'td-polygon-outline', 'td-linestring', 'td-point'];
+        for (const id of layerIds) {
+          if (!map.getLayer(id)) continue;
+          const lay = map.getStyle().layers.find(l => l.id === id);
+          if (!lay) continue;
+          if (lay.type === 'fill') {
+            map.setPaintProperty(id, 'fill-opacity', 0);
+          } else if (lay.type === 'line') {
+            map.setPaintProperty(id, 'line-opacity', 0);
+          } else if (lay.type === 'circle') {
+            map.setPaintProperty(id, 'circle-opacity', 0);
+            map.setPaintProperty(id, 'circle-stroke-opacity', 0);
+          }
+        }
+      }
+
+      // Subscribe to terra-draw events. We only push to our store on `finish`,
+      // and we DO NOT remove from terra-draw (keeping its copy alive enables
+      // the Select and Delete buttons).
       const td = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
       if (td && typeof td.on === 'function') {
         td.on('finish', (id, ctx) => {
@@ -1158,25 +1182,39 @@
             console.info('[HydraulicGIS] terra-draw finish:', id, ctx);
             const snap = td.getSnapshot();
             const f = snap.find(x => x.id === id);
-            if (!f) {
-              console.warn('[HydraulicGIS] feature', id, 'not in snapshot, ignoring');
-              return;
-            }
+            if (!f) return;
             const mode = (f.properties && f.properties.mode) || (ctx && ctx.mode) || '';
             const kind = kindFromGeom(f.geometry, mode);
-            const newF = addFeature({ type: 'Feature', geometry: f.geometry, properties: {} }, kind);
+            const newF = addFeature({ type: 'Feature', geometry: f.geometry, properties: { _terraId: id } }, kind);
             console.info('[HydraulicGIS] added feature', newF.id, 'kind=' + kind);
-            // Remove the original from terra-draw so it doesn't double-render.
-            try { td.removeFeatures([id]); } catch (err) {
-              console.warn('[HydraulicGIS] removeFeatures failed:', err);
-            }
+            // After terra-draw's render runs (next frame), hide its visible layers
+            // so only our styled copies appear.
+            requestAnimationFrame(hideTerraDrawLayers);
           } catch (err) {
             console.error('[HydraulicGIS] error in finish handler:', err);
+          }
+        });
+
+        // When user deletes via terra-draw's Delete or Delete-Selection button,
+        // remove the matching feature(s) from OUR store too.
+        td.on('change', (ids, type) => {
+          if (type !== 'delete') return;
+          // Map terra-draw IDs back to our app feature IDs via the _terraId property.
+          const banTerraIds = new Set(ids);
+          const toRemove = state.features
+            .filter(f => f.geojson.properties && banTerraIds.has(f.geojson.properties._terraId))
+            .map(f => f.id);
+          if (toRemove.length) {
+            console.info('[HydraulicGIS] removing', toRemove.length, 'feature(s) deleted in terra-draw');
+            toRemove.forEach(removeFeature);
           }
         });
       } else {
         console.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
+
+      // Also re-hide terra-draw layers any time the map style is added to.
+      map.on('styledata', () => requestAnimationFrame(hideTerraDrawLayers));
     } catch (e) {
       console.error('[HydraulicGIS] Échec d\'initialisation de terra-draw :', e);
       drawControl = null;
