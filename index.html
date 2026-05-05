@@ -719,10 +719,31 @@
   <script>
   /* ════════════════════════════════════════════════════════════════════════════
      HYDRAULIC GIS — Application monofichier
-     Version: 2026-05-05-v7
+     Version: 2026-05-05-v8
      Stack : MapLibre GL 5 · terra-draw · proj4 · Turf · file-saver
      ════════════════════════════════════════════════════════════════════════════ */
-  console.info('%c[HydraulicGIS] v7 — 2026-05-05', 'color:#3aa0ff;font-weight:bold;font-size:12px');
+
+  /* SAFE LOGGER
+     Some corporate environments (antivirus, browser extensions) replace
+     window.console with a partial implementation that lacks .info or .warn.
+     Calling a missing method throws, killing the surrounding function. We
+     wrap every method call so logging is best-effort and never throws. */
+  const log = (function () {
+    function safe(method) {
+      return function () {
+        try {
+          if (window.console && typeof window.console[method] === 'function') {
+            window.console[method].apply(window.console, arguments);
+          } else if (window.console && typeof window.console.log === 'function') {
+            window.console.log.apply(window.console, arguments);
+          }
+        } catch (_) { /* ignore */ }
+      };
+    }
+    return { info: safe('info'), warn: safe('warn'), error: safe('error'), log: safe('log') };
+  })();
+
+  log.info('%c[HydraulicGIS] v8 — 2026-05-05', 'color:#3aa0ff;font-weight:bold;font-size:12px');
 
   /* ═══ 0. EARLY STATE INIT ═══════════════════════════════════════════════════
      These transient state values are referenced by panel render functions.
@@ -831,7 +852,7 @@
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) state.features = JSON.parse(raw);
-    } catch (e) { console.warn('Échec de chargement :', e); }
+    } catch (e) { log.warn('Échec de chargement :', e); }
     // Restore basemap preference
     try {
       const bm = localStorage.getItem('hydraulic-gis:basemap');
@@ -841,7 +862,7 @@
   function saveState() {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state.features));
-    } catch (e) { console.warn('Échec de sauvegarde :', e); }
+    } catch (e) { log.warn('Échec de sauvegarde :', e); }
   }
 
   function notifyFeatures() {
@@ -1050,7 +1071,7 @@
       if (sbX) sbX.textContent = formatProjected(x, 1);
       if (sbY) sbY.textContent = formatProjected(y, 1);
     } catch (err) {
-      console.warn('[HydraulicGIS] mousemove update failed:', err);
+      log.warn('[HydraulicGIS] mousemove update failed:', err);
     }
   });
 
@@ -1164,22 +1185,87 @@
     if (drawControl) return;
     if (typeof MaplibreTerradrawControl === 'undefined' ||
         !MaplibreTerradrawControl.MaplibreTerradrawControl) {
-      console.warn('[HydraulicGIS] terra-draw n\'a pas pu être chargé — le dessin est désactivé. Le reste de l\'application fonctionne.');
+      log.warn('[HydraulicGIS] terra-draw n\'a pas pu être chargé — le dessin est désactivé. Le reste de l\'application fonctionne.');
       return;
     }
     try {
-      drawControl = new MaplibreTerradrawControl.MaplibreTerradrawControl({
+      // Configure draw modes for tap-to-place behavior (instead of the default
+      // click-drag), which is much more usable on touch screens — the user
+      // taps a corner, lifts the finger, taps the opposite corner. They can
+      // pan/zoom the map between taps because they're not in a drag gesture.
+      //
+      // We use the wrapper's getDefaultModeOptions() helper to get pre-built
+      // mode instances, then reconfigure the ones that use a drag interaction.
+      let modeOptions = null;
+      try {
+        if (typeof MaplibreTerradrawControl.getDefaultModeOptions === 'function') {
+          modeOptions = MaplibreTerradrawControl.getDefaultModeOptions();
+          // 'click-move': tap to start, tap again to finish — no drag needed.
+          for (const modeName of ['rectangle', 'circle', 'angled-rectangle', 'sector']) {
+            const mode = modeOptions[modeName];
+            if (mode && typeof mode.updateOptions === 'function') {
+              try { mode.updateOptions({ drawInteraction: 'click-move' }); }
+              catch (err) { log.warn('[HydraulicGIS] could not set click-move on', modeName, err); }
+            }
+          }
+          log.info('[HydraulicGIS] tap-to-place mode enabled for rectangle/circle/sector.');
+        } else {
+          log.warn('[HydraulicGIS] getDefaultModeOptions not available — drawing uses default click-drag.');
+        }
+      } catch (err) {
+        log.warn('[HydraulicGIS] mode configuration failed, falling back to defaults:', err);
+        modeOptions = null;
+      }
+
+      const controlOpts = {
         modes: ['point', 'linestring', 'polygon', 'rectangle', 'circle', 'freehand', 'select', 'delete-selection', 'delete'],
         open: true,
-      });
+      };
+      if (modeOptions) controlOpts.modeOptions = modeOptions;
+
+      drawControl = new MaplibreTerradrawControl.MaplibreTerradrawControl(controlOpts);
       map.addControl(drawControl, 'top-left');
-      console.info('[HydraulicGIS] terra-draw control added.');
+      log.info('[HydraulicGIS] terra-draw control added.');
 
       // Track which terra-draw feature IDs have been copied to our store.
       // We then apply a filter to terra-draw's render layers so those features
       // don't double-draw. The currently-being-drawn feature (NOT yet in this
       // set) keeps rendering normally, so the user sees their drawing live.
       const copiedTerraIds = new Set();
+
+      // After terra-draw creates its layers (td-point, td-linestring, td-polygon,
+      // td-polygon-outline), boost their visual weight so the user can see their
+      // own drawing — especially on phones where finger placement obscures small
+      // points and thin lines. Also makes the FIRST tapped point clearly visible.
+      function boostTerraDrawStyles() {
+        try {
+          if (map.getLayer('td-point')) {
+            map.setPaintProperty('td-point', 'circle-radius', 9);
+            map.setPaintProperty('td-point', 'circle-color', '#ffd24a');
+            map.setPaintProperty('td-point', 'circle-stroke-color', '#0b0f14');
+            map.setPaintProperty('td-point', 'circle-stroke-width', 2);
+          }
+          if (map.getLayer('td-linestring')) {
+            map.setPaintProperty('td-linestring', 'line-color', '#ffd24a');
+            map.setPaintProperty('td-linestring', 'line-width', 3);
+          }
+          if (map.getLayer('td-polygon')) {
+            map.setPaintProperty('td-polygon', 'fill-color', '#ffd24a');
+            map.setPaintProperty('td-polygon', 'fill-opacity', 0.25);
+          }
+          if (map.getLayer('td-polygon-outline')) {
+            map.setPaintProperty('td-polygon-outline', 'line-color', '#ffd24a');
+            map.setPaintProperty('td-polygon-outline', 'line-width', 3);
+          }
+        } catch (err) { log.warn('[HydraulicGIS] boost styles failed:', err); }
+      }
+
+      // The td-* layers don't exist immediately — they're created on demand
+      // when the user enters a draw mode. Watch for their creation via
+      // `styledata` (which fires when sources/layers change), and re-apply
+      // our visual boost. This is safe: we set explicit values that won't
+      // accumulate or cascade.
+      map.on('styledata', () => requestAnimationFrame(boostTerraDrawStyles));
 
       function refreshTerraDrawFilters() {
         const layerIds = ['td-polygon', 'td-polygon-outline', 'td-linestring', 'td-point'];
@@ -1194,7 +1280,7 @@
               const ids = Array.from(copiedTerraIds);
               map.setFilter(id, ['!', ['in', ['id'], ['literal', ids]]]);
             }
-          } catch (err) { console.warn('[HydraulicGIS] setFilter failed on', id, err); }
+          } catch (err) { log.warn('[HydraulicGIS] setFilter failed on', id, err); }
         }
       }
 
@@ -1205,14 +1291,14 @@
       if (td && typeof td.on === 'function') {
         td.on('finish', (id, ctx) => {
           try {
-            console.info('[HydraulicGIS] terra-draw finish:', id, ctx);
+            log.info('[HydraulicGIS] terra-draw finish:', id, ctx);
             const snap = td.getSnapshot();
             const f = snap.find(x => x.id === id);
             if (!f) return;
             const mode = (f.properties && f.properties.mode) || (ctx && ctx.mode) || '';
             const kind = kindFromGeom(f.geometry, mode);
             const newF = addFeature({ type: 'Feature', geometry: f.geometry, properties: { _terraId: id } }, kind);
-            console.info('[HydraulicGIS] added feature', newF.id, 'kind=' + kind);
+            log.info('[HydraulicGIS] added feature', newF.id, 'kind=' + kind);
             // Now exclude this feature from terra-draw's rendering so we
             // don't see it twice. App-line / app-poly-fill render OUR copy.
             copiedTerraIds.add(id);
@@ -1225,7 +1311,7 @@
               }
             } catch (err) { /* ignore */ }
           } catch (err) {
-            console.error('[HydraulicGIS] error in finish handler:', err);
+            log.error('[HydraulicGIS] error in finish handler:', err);
           }
         });
 
@@ -1241,7 +1327,7 @@
               .filter(f => f.geojson.properties && banTerraIds.has(f.geojson.properties._terraId))
               .map(f => f.id);
             if (toRemove.length) {
-              console.info('[HydraulicGIS] removing', toRemove.length, 'feature(s) deleted in terra-draw');
+              log.info('[HydraulicGIS] removing', toRemove.length, 'feature(s) deleted in terra-draw');
               toRemove.forEach(removeFeature);
             }
             ids.forEach(id => copiedTerraIds.delete(id));
@@ -1262,13 +1348,13 @@
               touched++;
             }
             if (touched) {
-              console.info('[HydraulicGIS] updated', touched, 'feature(s) edited in terra-draw');
+              log.info('[HydraulicGIS] updated', touched, 'feature(s) edited in terra-draw');
               notifyFeatures();
             }
           }
         });
       } else {
-        console.warn('[HydraulicGIS] td.on is not a function — events disabled.');
+        log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
 
       // NOTE: we do NOT hide terra-draw layers on every styledata event,
@@ -1277,7 +1363,7 @@
       // in the `finish` callback above (post-RAF) and after a basemap change
       // (handled in setBasemap below).
     } catch (e) {
-      console.error('[HydraulicGIS] Échec d\'initialisation de terra-draw :', e);
+      log.error('[HydraulicGIS] Échec d\'initialisation de terra-draw :', e);
       drawControl = null;
     }
   }
