@@ -719,8 +719,15 @@
   <script>
   /* ════════════════════════════════════════════════════════════════════════════
      HYDRAULIC GIS — Application monofichier
-     Version: 2026-05-05-v9
+     Version: 2026-05-05-v10
      Stack : MapLibre GL 5 · terra-draw · proj4 · Turf · file-saver
+
+     ARCHITECTURE NOTE: terra-draw is the SOLE renderer of drawn features.
+     We don't maintain duplicate `app-poly-fill` / `app-line` / `app-point`
+     layers anymore — they were causing visibility bugs on mobile and a
+     complex filter/double-render dance. Our store is kept in sync with
+     terra-draw via events, used for the Calques panel, exports, metrics,
+     and labels.
      ════════════════════════════════════════════════════════════════════════════ */
 
   /* SAFE LOGGER
@@ -743,7 +750,7 @@
     return { info: safe('info'), warn: safe('warn'), error: safe('error'), log: safe('log') };
   })();
 
-  log.info('%c[HydraulicGIS] v9 — 2026-05-05', 'color:#3aa0ff;font-weight:bold;font-size:12px');
+  log.info('%c[HydraulicGIS] v10 — 2026-05-05', 'color:#3aa0ff;font-weight:bold;font-size:12px');
 
   /* ═══ 0. EARLY STATE INIT ═══════════════════════════════════════════════════
      These transient state values are referenced by panel render functions.
@@ -948,6 +955,17 @@
   }
 
   function removeFeature(id) {
+    const f = state.features.find(x => x.id === id);
+    // If this feature was drawn in terra-draw, remove it from there too
+    // (terra-draw is the renderer; if it stays, the shape stays on the map).
+    if (f && f.geojson.properties && f.geojson.properties._terraId && drawControl) {
+      try {
+        const td = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
+        if (td && typeof td.removeFeatures === 'function') {
+          td.removeFeatures([f.geojson.properties._terraId]);
+        }
+      } catch (err) { log.warn('[HydraulicGIS] removeFeatures failed:', err); }
+    }
     state.features = state.features.filter(f => f.id !== id);
     state.selectedIds = state.selectedIds.filter(x => x !== id);
     notifyFeatures();
@@ -955,6 +973,20 @@
   }
 
   function clearAllFeatures() {
+    // Remove from terra-draw too.
+    if (drawControl) {
+      try {
+        const td = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
+        if (td) {
+          const ids = state.features
+            .map(f => f.geojson && f.geojson.properties && f.geojson.properties._terraId)
+            .filter(Boolean);
+          if (ids.length && typeof td.removeFeatures === 'function') {
+            td.removeFeatures(ids);
+          }
+        }
+      } catch (err) { log.warn('[HydraulicGIS] removeFeatures failed:', err); }
+    }
     state.features = [];
     state.selectedIds = [];
     notifyFeatures();
@@ -1126,56 +1158,23 @@
 
   function installAppLayers() {
     if (!map.isStyleLoaded()) {
-      // Wait until the style is ready, then retry. This avoids the
-      // "all my objects vanished" symptom after a basemap switch.
       map.once('idle', () => { try { installAppLayers(); syncFeaturesToMap(); } catch(_) {} });
       return;
     }
-    // Idempotent: if everything's already installed, nothing to do.
-    if (map.getSource(SRC_POINTS) && map.getLayer('app-poly-fill') && map.getLayer('app-line') && map.getLayer('app-point') && map.getLayer('app-label')) {
-      return;
-    }
-    // Otherwise, clean partial state then re-create everything.
-    for (const lid of ['app-poly-fill', 'app-poly-stroke', 'app-line', 'app-point', 'app-label']) {
-      if (map.getLayer(lid)) { try { map.removeLayer(lid); } catch (_) {} }
-    }
-    for (const sid of [SRC_POINTS, SRC_LINES, SRC_POLYS, SRC_LABELS]) {
-      if (map.getSource(sid)) { try { map.removeSource(sid); } catch (_) {} }
-    }
+    // Idempotent: already installed?
+    if (map.getSource(SRC_LABELS) && map.getLayer('app-label')) return;
+
+    // Clean partial state.
+    if (map.getLayer('app-label')) { try { map.removeLayer('app-label'); } catch (_) {} }
+    if (map.getSource(SRC_LABELS)) { try { map.removeSource(SRC_LABELS); } catch (_) {} }
+
     const empty = { type: 'FeatureCollection', features: [] };
-    map.addSource(SRC_POINTS, { type: 'geojson', data: empty });
-    map.addSource(SRC_LINES, { type: 'geojson', data: empty });
-    map.addSource(SRC_POLYS, { type: 'geojson', data: empty });
     map.addSource(SRC_LABELS, { type: 'geojson', data: empty });
 
-    map.addLayer({
-      id: 'app-poly-fill', type: 'fill', source: SRC_POLYS,
-      paint: { 'fill-color': ['get', 'fill'], 'fill-opacity': ['get', 'fillOpacity'] },
-    });
-    map.addLayer({
-      id: 'app-poly-stroke', type: 'line', source: SRC_POLYS,
-      paint: { 'line-color': ['get', 'stroke'], 'line-width': ['get', 'strokeWidth'] },
-    });
-    map.addLayer({
-      id: 'app-line', type: 'line', source: SRC_LINES,
-      layout: {
-        'line-cap': 'round',
-        'line-join': 'round',
-      },
-      paint: {
-        'line-color': ['get', 'stroke'],
-        'line-width': ['get', 'strokeWidth'],
-      },
-    });
-    map.addLayer({
-      id: 'app-point', type: 'circle', source: SRC_POINTS,
-      paint: {
-        'circle-radius': 6,
-        'circle-color': ['get', 'fill'],
-        'circle-stroke-color': ['get', 'stroke'],
-        'circle-stroke-width': ['get', 'strokeWidth'],
-      },
-    });
+    // We only render LABELS via our own layer. The shapes themselves are
+    // rendered by terra-draw (td-point, td-linestring, td-polygon). This
+    // keeps the mobile draw experience simple and bug-free: terra-draw is
+    // the sole renderer and there's no double-buffering or filter dance.
     map.addLayer({
       id: 'app-label', type: 'symbol', source: SRC_LABELS,
       layout: {
@@ -1205,55 +1204,45 @@
 
   function syncFeaturesToMap() {
     if (!map.isStyleLoaded()) return;
-    // Defensive: if our sources are missing (style change, WebGL restore,
-    // basemap switch), re-install them. Without this guard the setData()
-    // calls below would throw and the user's drawn objects would vanish.
-    if (!map.getSource(SRC_POINTS)) {
+    if (!map.getSource(SRC_LABELS)) {
       try { installAppLayers(); }
       catch (err) { log.warn('[HydraulicGIS] layer reinstall failed:', err); return; }
     }
-    const points = [], lines = [], polys = [], labels = [];
+
+    // Build labels for features (terra-draw doesn't render names).
+    const labels = [];
     for (const f of state.features) {
-      if (!f.style.visible) continue;
-      const props = {
-        id: f.id, name: f.name,
-        stroke: f.style.stroke, strokeWidth: f.style.strokeWidth,
-        fill: f.style.fill, fillOpacity: f.style.fillOpacity,
-      };
-      const enriched = { ...f.geojson, properties: { ...(f.geojson.properties || {}), ...props } };
+      if (!f.style || !f.style.visible) continue;
+      if (!f.style.showLabel) continue;
+      const props = { id: f.id, name: f.name };
       if (f.kind === 'point') {
-        points.push(enriched);
-        if (f.style.showLabel) labels.push(enriched);
+        labels.push({ type: 'Feature', geometry: f.geojson.geometry, properties: props });
       } else if (f.kind === 'line') {
-        lines.push(enriched);
-        if (f.style.showLabel) {
-          // Place label at the line's midpoint (along its length, not centroid).
-          try {
-            const totalKm = turf.length(f.geojson, { units: 'kilometers' });
-            if (totalKm > 0) {
-              const mid = turf.along(f.geojson, totalKm / 2, { units: 'kilometers' });
-              labels.push({ type: 'Feature', geometry: mid.geometry, properties: props });
-            }
-          } catch (e) { /* skip label if turf fails on degenerate line */ }
-        }
+        try {
+          const totalKm = turf.length(f.geojson, { units: 'kilometers' });
+          if (totalKm > 0) {
+            const mid = turf.along(f.geojson, totalKm / 2, { units: 'kilometers' });
+            labels.push({ type: 'Feature', geometry: mid.geometry, properties: props });
+          }
+        } catch (_) {}
       } else {
-        polys.push(enriched);
-        if (f.style.showLabel) {
-          const c = polyCentroid(f);
-          if (c) labels.push({ type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: props });
-        }
+        const c = polyCentroid(f);
+        if (c) labels.push({ type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: props });
       }
     }
+
     try {
-      map.getSource(SRC_POINTS).setData({ type: 'FeatureCollection', features: points });
-      map.getSource(SRC_LINES).setData({ type: 'FeatureCollection', features: lines });
-      map.getSource(SRC_POLYS).setData({ type: 'FeatureCollection', features: polys });
       map.getSource(SRC_LABELS).setData({ type: 'FeatureCollection', features: labels });
-      // Force a repaint so the new data is visible immediately on mobile.
-      map.triggerRepaint();
     } catch (err) {
-      log.warn('[HydraulicGIS] syncFeaturesToMap setData failed:', err);
+      log.warn('[HydraulicGIS] label setData failed:', err);
     }
+
+    // Sync visibility from our store to terra-draw: hide invisible features
+    // by removing them from terra-draw's store. (We restore on re-show.)
+    // For now, simple version: just sync a "hidden ids" set into terra-draw
+    // by selectively re-creating features. Skipped in this pass — visibility
+    // toggle is a known limitation we can address in a follow-up.
+    try { map.triggerRepaint(); } catch (_) {}
   }
 
   function installDrawControl() {
@@ -1302,89 +1291,23 @@
       map.addControl(drawControl, 'top-left');
       log.info('[HydraulicGIS] terra-draw control added.');
 
-      // Track which terra-draw feature IDs have been copied to our store.
-      // We then apply a filter to terra-draw's render layers so those features
-      // don't double-draw. The currently-being-drawn feature (NOT yet in this
-      // set) keeps rendering normally, so the user sees their drawing live.
-      const copiedTerraIds = new Set();
-
-      // After terra-draw creates its layers (td-point, td-linestring, td-polygon,
-      // td-polygon-outline), boost their visual weight so the user can see their
-      // own drawing — especially on phones where finger placement obscures small
-      // points and thin lines. Also makes the FIRST tapped point clearly visible.
-      // Sizes are tuned for touch screens.
-      function boostTerraDrawStyles() {
-        try {
-          if (map.getLayer('td-point')) {
-            // Bigger point for finger visibility (default is 6, we use 10).
-            map.setPaintProperty('td-point', 'circle-radius', 10);
-            map.setPaintProperty('td-point', 'circle-color', '#ffd24a');
-            map.setPaintProperty('td-point', 'circle-stroke-color', '#0b0f14');
-            map.setPaintProperty('td-point', 'circle-stroke-width', 2.5);
-            map.setPaintProperty('td-point', 'circle-opacity', 1);
-            map.setPaintProperty('td-point', 'circle-stroke-opacity', 1);
-          }
-          if (map.getLayer('td-linestring')) {
-            map.setPaintProperty('td-linestring', 'line-color', '#ffd24a');
-            map.setPaintProperty('td-linestring', 'line-width', 4);
-            map.setPaintProperty('td-linestring', 'line-opacity', 1);
-          }
-          if (map.getLayer('td-polygon')) {
-            map.setPaintProperty('td-polygon', 'fill-color', '#ffd24a');
-            map.setPaintProperty('td-polygon', 'fill-opacity', 0.25);
-          }
-          if (map.getLayer('td-polygon-outline')) {
-            map.setPaintProperty('td-polygon-outline', 'line-color', '#ffd24a');
-            map.setPaintProperty('td-polygon-outline', 'line-width', 4);
-            map.setPaintProperty('td-polygon-outline', 'line-opacity', 1);
-          }
-        } catch (err) { log.warn('[HydraulicGIS] boost styles failed:', err); }
-      }
-
-      // The td-* layers don't exist immediately — they're created on demand
-      // when the user enters a draw mode. Watch for their creation via
-      // `styledata` (which fires when sources/layers change), and re-apply
-      // our visual boost. This is safe: we set explicit values that won't
-      // accumulate or cascade.
-      // Also force a map repaint so freshly-drawn shapes appear without
-      // requiring the user to pan/zoom first (mobile WebGL repaint quirk).
-      map.on('styledata', () => {
-        requestAnimationFrame(() => {
-          boostTerraDrawStyles();
-          try { map.triggerRepaint(); } catch (_) {}
-        });
-      });
-
-      function refreshTerraDrawFilters() {
-        const layerIds = ['td-polygon', 'td-polygon-outline', 'td-linestring', 'td-point'];
-        for (const id of layerIds) {
-          if (!map.getLayer(id)) continue;
-          try {
-            if (copiedTerraIds.size === 0) {
-              map.setFilter(id, null);
-            } else {
-              // Modern filter expression: keep features whose top-level id
-              // is NOT in the copied set.
-              const ids = Array.from(copiedTerraIds);
-              map.setFilter(id, ['!', ['in', ['id'], ['literal', ids]]]);
-            }
-          } catch (err) { log.warn('[HydraulicGIS] setFilter failed on', id, err); }
-        }
-      }
-
-      // Subscribe to terra-draw events. We push to our store on `finish`,
-      // and we DO NOT remove from terra-draw (keeping its copy alive enables
-      // the Select and Delete buttons).
+      // Subscribe to terra-draw events. We keep our store in sync with what
+      // terra-draw has, but TERRA-DRAW IS THE SOLE RENDERER for drawn shapes.
+      // No filtering, no opacity tricks, no double-rendering. The user always
+      // sees terra-draw's version (in-progress AND finished alike).
       const td = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
       if (td && typeof td.on === 'function') {
-        // Mobile WebGL repaint quirk: terra-draw updates its source data, but
-        // MapLibre may not re-render until the user pans/zooms. We force a
-        // repaint on EVERY change event (including 'create' for the first tap).
-        // Cheap operation; safe to call frequently.
-        td.on('change', (ids, type) => {
+
+        // On every change (create / update / delete / styling), force a repaint.
+        // This is the mobile WebGL fix: data updates without a repaint stay
+        // invisible until the user pans/zooms.
+        td.on('change', () => {
           try { map.triggerRepaint(); } catch (_) {}
         });
 
+        // When a draw finishes, copy the feature into our store for the
+        // Calques panel, exports, measurements. The map already shows it
+        // because terra-draw still owns the rendering.
         td.on('finish', (id, ctx) => {
           try {
             log.info('[HydraulicGIS] terra-draw finish:', id, ctx);
@@ -1395,30 +1318,19 @@
             const kind = kindFromGeom(f.geometry, mode);
             const newF = addFeature({ type: 'Feature', geometry: f.geometry, properties: { _terraId: id } }, kind);
             log.info('[HydraulicGIS] added feature', newF.id, 'kind=' + kind);
-            // Now exclude this feature from terra-draw's rendering so we
-            // don't see it twice. App-line / app-poly-fill render OUR copy.
-            copiedTerraIds.add(id);
-            requestAnimationFrame(() => {
-              refreshTerraDrawFilters();
-              try { map.triggerRepaint(); } catch (_) {}
-            });
-            // The wrapper enables/disables Select & Delete based on whether
-            // any features exist. Force a re-check now in case it didn't fire.
             try {
               if (typeof drawControl.toggleButtonsWhenNoFeature === 'function') {
                 drawControl.toggleButtonsWhenNoFeature();
               }
-            } catch (err) { /* ignore */ }
+            } catch (_) {}
+            try { map.triggerRepaint(); } catch (_) {}
           } catch (err) {
             log.error('[HydraulicGIS] error in finish handler:', err);
           }
         });
 
-        // When user deletes via terra-draw's Delete or Delete-Selection button,
-        // remove the matching feature(s) from OUR store too. When user EDITS
-        // (drags a vertex, moves a shape), update OUR geometry so we don't
-        // end up with two copies (the old one in our store + the new one in
-        // terra-draw).
+        // Sync deletes (Delete / Delete-Selection buttons in the toolbar)
+        // and edits (Select-mode vertex drags) back into our store.
         td.on('change', (ids, type) => {
           if (type === 'delete') {
             const banTerraIds = new Set(ids);
@@ -1429,14 +1341,10 @@
               log.info('[HydraulicGIS] removing', toRemove.length, 'feature(s) deleted in terra-draw');
               toRemove.forEach(removeFeature);
             }
-            ids.forEach(id => copiedTerraIds.delete(id));
-            refreshTerraDrawFilters();
           } else if (type === 'update') {
-            // Sync edits: find each feature by _terraId and replace its geometry.
             const snap = td.getSnapshot();
             let touched = 0;
             for (const tid of ids) {
-              if (!copiedTerraIds.has(tid)) continue;
               const tf = snap.find(x => x.id === tid);
               if (!tf) continue;
               const ours = state.features.find(f => f.geojson.properties && f.geojson.properties._terraId === tid);
@@ -1448,7 +1356,10 @@
             }
             if (touched) {
               log.info('[HydraulicGIS] updated', touched, 'feature(s) edited in terra-draw');
-              notifyFeatures();
+              // Don't call notifyFeatures (which calls syncFeaturesToMap that
+              // we no longer use); just refresh the panel.
+              notifyUi();
+              saveState();
             }
           }
         });
@@ -1457,10 +1368,7 @@
       }
 
       // Disable doubleClickZoom while in any draw mode — otherwise the second
-      // tap of click-move rectangle/circle drawing also triggers zoom-in,
-      // which interferes with the drawing finish.
-      // Also poll for mode changes since the wrapper's API for subscribing
-      // varies; using a simple polling check keeps this robust.
+      // tap of click-move rectangle/circle drawing also triggers zoom-in.
       function syncGesturesToMode() {
         try {
           const mode = td && typeof td.getMode === 'function' ? td.getMode() : 'static';
@@ -1468,24 +1376,14 @@
           setDoubleClickZoom(!isDrawing);
         } catch (_) {}
       }
-      // Try the wrapper's mode-changed event first.
       if (typeof drawControl.on === 'function') {
         try { drawControl.on('mode-changed', syncGesturesToMode); }
         catch (_) {}
       }
-      // Fallback: also call sync after every td.change event (a mode change
-      // generally triggers a change too).
       if (td && typeof td.on === 'function') {
         td.on('change', syncGesturesToMode);
       }
-      // Initial sync.
       syncGesturesToMode();
-
-      // NOTE: we do NOT hide terra-draw layers on every styledata event,
-      // because terra-draw fires that event during active drawing and our
-      // hide would erase the line/polygon being drawn. Hiding only happens
-      // in the `finish` callback above (post-RAF) and after a basemap change
-      // (handled in setBasemap below).
     } catch (e) {
       log.error('[HydraulicGIS] Échec d\'initialisation de terra-draw :', e);
       drawControl = null;
@@ -1496,12 +1394,33 @@
     if (state.basemap === id) return;
     state.basemap = id;
     try { localStorage.setItem('hydraulic-gis:basemap', id); } catch (e) {}
+
+    // Snapshot terra-draw's features before the style swap so we can
+    // re-add them after — setStyle() wipes all sources/layers, including
+    // terra-draw's, which would make the user's drawings disappear.
+    let tdSnapshot = [];
+    try {
+      const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
+      if (td && typeof td.getSnapshot === 'function') {
+        tdSnapshot = td.getSnapshot() || [];
+      }
+    } catch (_) {}
+
     map.setStyle(BASEMAPS[id]);
     map.once('idle', () => {
       installAppLayers();
       syncFeaturesToMap();
-      updateGrid(); // grid sources/layers were wiped with the style — re-add
+      updateGrid();
+      // Re-inject terra-draw's features. The wrapper itself doesn't
+      // re-add them automatically after setStyle.
+      try {
+        const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
+        if (td && tdSnapshot.length && typeof td.addFeatures === 'function') {
+          td.addFeatures(tdSnapshot);
+        }
+      } catch (err) { log.warn('[HydraulicGIS] re-adding td features after basemap change failed:', err); }
     });
+
     document.querySelectorAll('.basemap-btn[data-basemap]').forEach(b => {
       b.classList.toggle('active', b.dataset.basemap === id);
     });
@@ -1512,6 +1431,42 @@
     installDrawControl();
     syncFeaturesToMap();
     updateGrid(); // initial grid state
+
+    // Push any features loaded from localStorage into terra-draw so they
+    // render on the map (terra-draw is the renderer; without this, saved
+    // features would only appear in the Calques panel, not on the map).
+    try {
+      const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
+      if (td && state.features.length && typeof td.addFeatures === 'function') {
+        const tdFeatures = state.features
+          .filter(f => f.geojson && f.geojson.geometry)
+          .map(f => {
+            // terra-draw needs a stable id. Either use existing _terraId,
+            // or assign a fresh one and link it back.
+            let tid = f.geojson.properties && f.geojson.properties._terraId;
+            if (!tid) {
+              tid = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : 'restored-' + f.id;
+              f.geojson.properties = { ...(f.geojson.properties || {}), _terraId: tid };
+            }
+            // Each terra-draw feature needs a `mode` property so it knows
+            // which mode owns it (for select/edit/delete).
+            const tdMode = ({ point: 'point', line: 'linestring', polygon: 'polygon',
+                              rectangle: 'rectangle', circle: 'circle', freehand: 'freehand' })[f.kind] || 'polygon';
+            return {
+              id: tid,
+              type: 'Feature',
+              geometry: f.geojson.geometry,
+              properties: { ...(f.geojson.properties || {}), mode: tdMode },
+            };
+          });
+        if (tdFeatures.length) {
+          td.addFeatures(tdFeatures);
+          log.info('[HydraulicGIS] restored', tdFeatures.length, 'feature(s) into terra-draw');
+        }
+      }
+    } catch (err) {
+      log.warn('[HydraulicGIS] restoring features into terra-draw failed:', err);
+    }
   });
   onFeatures(syncFeaturesToMap);
 
