@@ -304,6 +304,16 @@
       #status-bar { display: flex; align-items: center; }
     }
 
+    /* Diagnostic HUD */
+    #td-hud {
+      position: absolute; top: 110px; left: 60px; z-index: 6;
+      padding: 8px 10px; min-width: 180px;
+      pointer-events: auto;
+    }
+    @media (max-width: 1024px) {
+      #td-hud { top: 76px; left: 12px; right: 12px; min-width: 0; }
+    }
+
     /* ═════ MOBILE FAB ═════ */
     #fab {
       display: flex;
@@ -676,6 +686,22 @@
         <span><span class="lbl">Y</span> <span id="sb-y">—</span></span>
       </div>
 
+      <!-- Diagnostic HUD: real-time view of terra-draw state. Helpful for
+           verifying that taps register on mobile. Toggle with ?debug=1 or
+           via the debug button (added below). -->
+      <div id="td-hud" class="float-card" style="display:none;">
+        <div style="font-weight:600; font-size:11px; color:var(--ink-1); margin-bottom:4px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
+          <span>Diagnostic terra-draw</span>
+          <button onclick="document.getElementById('td-hud').style.display='none'" style="background:transparent; border:none; color:var(--ink-2); cursor:pointer; padding:0; font-size:14px;">×</button>
+        </div>
+        <div style="font-family:'JetBrains Mono',ui-monospace,monospace; font-size:10px; line-height:1.5; color:var(--ink-0);">
+          <div>Mode: <b id="hud-mode">—</b></div>
+          <div>Features: <b id="hud-count">0</b></div>
+          <div>Couches td-*: <b id="hud-layers">—</b></div>
+          <div>Dernier event: <b id="hud-event">—</b></div>
+        </div>
+      </div>
+
       <!-- Mobile FAB -->
       <button id="fab" aria-label="Ouvrir les outils" onclick="ui.openMenu()">
         <svg width="24" height="24" viewBox="0 0 24 24" fill="none">
@@ -719,7 +745,7 @@
   <script>
   /* ════════════════════════════════════════════════════════════════════════════
      HYDRAULIC GIS — Application monofichier
-     Version: 2026-05-05-v10
+     Version: 2026-05-05-v11
      Stack : MapLibre GL 5 · terra-draw · proj4 · Turf · file-saver
 
      ARCHITECTURE NOTE: terra-draw is the SOLE renderer of drawn features.
@@ -750,7 +776,7 @@
     return { info: safe('info'), warn: safe('warn'), error: safe('error'), log: safe('log') };
   })();
 
-  log.info('%c[HydraulicGIS] v10 — 2026-05-05', 'color:#3aa0ff;font-weight:bold;font-size:12px');
+  log.info('%c[HydraulicGIS] v11 — 2026-05-05', 'color:#3aa0ff;font-weight:bold;font-size:12px');
 
   /* ═══ 0. EARLY STATE INIT ═══════════════════════════════════════════════════
      These transient state values are referenced by panel render functions.
@@ -1245,6 +1271,61 @@
     try { map.triggerRepaint(); } catch (_) {}
   }
 
+  // ─── Diagnostic HUD ───
+  // Activates on URL param ?debug=1 OR by typing 'D' three times in a row.
+  // Lets us see if terra-draw is registering taps when the visual rendering
+  // appears broken on mobile.
+  const isDebugMode = (function () {
+    try { return /[?&]debug=1\b/.test(window.location.search); }
+    catch (_) { return false; }
+  })();
+  function showHud() {
+    const el = document.getElementById('td-hud');
+    if (el) el.style.display = '';
+  }
+  function updateHud(eventLabel) {
+    if (!isDebugMode && !document.getElementById('td-hud') ||
+        document.getElementById('td-hud').style.display === 'none') return;
+    try {
+      const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
+      const mode = td && typeof td.getMode === 'function' ? td.getMode() : '—';
+      const snap = td && typeof td.getSnapshot === 'function' ? td.getSnapshot() : [];
+      const layers = ['td-point','td-linestring','td-polygon','td-polygon-outline']
+        .filter(id => map.getLayer(id))
+        .join(', ') || 'aucune';
+      const m = document.getElementById('hud-mode');
+      const c = document.getElementById('hud-count');
+      const l = document.getElementById('hud-layers');
+      const e = document.getElementById('hud-event');
+      if (m) m.textContent = mode;
+      if (c) c.textContent = snap.length;
+      if (l) l.textContent = layers;
+      if (e && eventLabel) e.textContent = eventLabel + ' @ ' + new Date().toISOString().substr(11, 8);
+    } catch (_) {}
+  }
+  if (isDebugMode) {
+    // Show HUD as soon as DOM is ready.
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', showHud);
+    } else {
+      showHud();
+    }
+  }
+  // Triple-D shortcut to toggle HUD even without URL param.
+  let _ddCount = 0, _ddTimer = null;
+  window.addEventListener('keydown', (e) => {
+    if (e.key === 'd' || e.key === 'D') {
+      _ddCount++;
+      clearTimeout(_ddTimer);
+      _ddTimer = setTimeout(() => { _ddCount = 0; }, 700);
+      if (_ddCount >= 3) {
+        const el = document.getElementById('td-hud');
+        if (el) el.style.display = el.style.display === 'none' ? '' : 'none';
+        _ddCount = 0;
+      }
+    }
+  });
+
   function installDrawControl() {
     if (drawControl) return;
     if (typeof MaplibreTerradrawControl === 'undefined' ||
@@ -1291,18 +1372,74 @@
       map.addControl(drawControl, 'top-left');
       log.info('[HydraulicGIS] terra-draw control added.');
 
+      // ─── Bug workaround: wrapper disables Select/Delete during selection ───
+      // The wrapper's toggleButtonsWhenNoFeature() calls getFeatures(false),
+      // which EXCLUDES features whose `properties.mode === "select"`. When the
+      // user enters select mode and the feature is being dragged/edited, its
+      // mode is temporarily 'select', so the count drops to 0 and the buttons
+      // disable mid-action. We replace the function with one that counts ALL
+      // features (including those currently in select mode).
+      try {
+        if (typeof drawControl.toggleButtonsWhenNoFeature === 'function') {
+          drawControl.toggleButtonsWhenNoFeature = function () {
+            if (!this.controlContainer) return;
+            const td2 = this.terradraw || (this.getTerraDrawInstance && this.getTerraDrawInstance());
+            if (!td2 || typeof td2.getSnapshot !== 'function') return;
+            const all = td2.getSnapshot() || [];
+            const hasFeature = all.length > 0;  // count ALL features, no mode filter
+            const ids = ['maplibregl-terradraw-add-select-button',
+                         'maplibregl-terradraw-download-button',
+                         'maplibregl-terradraw-delete-button',
+                         'maplibregl-terradraw-delete-selection-button'];
+            for (const cls of ids) {
+              const els = this.controlContainer.getElementsByClassName(cls);
+              for (let i = 0; i < els.length; i++) {
+                const el = els.item(i);
+                if (el) el.disabled = !hasFeature;
+              }
+            }
+          };
+          log.info('[HydraulicGIS] Select/Delete enable logic patched.');
+        }
+      } catch (err) {
+        log.warn('[HydraulicGIS] could not patch toggleButtonsWhenNoFeature:', err);
+      }
+
       // Subscribe to terra-draw events. We keep our store in sync with what
       // terra-draw has, but TERRA-DRAW IS THE SOLE RENDERER for drawn shapes.
       // No filtering, no opacity tricks, no double-rendering. The user always
       // sees terra-draw's version (in-progress AND finished alike).
+
+      // Boost the size of terra-draw's in-progress vertex circles so they're
+      // clearly visible on mobile (default is 6px — tiny under a finger).
+      // Apply only to the point radius — keep terra-draw's own colors.
+      // We re-apply on every styledata event since the layers may not exist
+      // yet when this runs the first time.
+      function boostTerraDrawPointSize() {
+        try {
+          if (map.getLayer('td-point')) {
+            map.setPaintProperty('td-point', 'circle-radius', 8);
+          }
+        } catch (_) {}
+      }
+      map.on('styledata', () => requestAnimationFrame(boostTerraDrawPointSize));
+
       const td = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
       if (td && typeof td.on === 'function') {
 
-        // On every change (create / update / delete / styling), force a repaint.
+        // On every change (create / update / delete / styling), force a repaint
+        // AND re-evaluate whether Select/Delete buttons should be enabled.
         // This is the mobile WebGL fix: data updates without a repaint stay
         // invisible until the user pans/zooms.
-        td.on('change', () => {
+        // We call triggerRepaint multiple times (now, next frame, and 50ms later)
+        // to maximize the chance of the in-progress shape becoming visible
+        // immediately on iOS Safari and Android WebView.
+        td.on('change', (ids, type) => {
           try { map.triggerRepaint(); } catch (_) {}
+          requestAnimationFrame(() => { try { map.triggerRepaint(); } catch (_) {} });
+          setTimeout(() => { try { map.triggerRepaint(); } catch (_) {} }, 50);
+          try { drawControl.toggleButtonsWhenNoFeature(); } catch (_) {}
+          updateHud(`change ${type} (${ids ? ids.length : 0})`);
         });
 
         // When a draw finishes, copy the feature into our store for the
