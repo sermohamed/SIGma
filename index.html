@@ -652,9 +652,9 @@
 
       <!-- Basemap switcher -->
       <div id="basemap-switcher" class="float-card">
-        <button class="basemap-btn active" data-basemap="dark">Sombre</button>
+        <button class="basemap-btn" data-basemap="dark">Sombre</button>
         <button class="basemap-btn" data-basemap="light">Clair</button>
-        <button class="basemap-btn" data-basemap="satellite">Satellite</button>
+        <button class="basemap-btn active" data-basemap="satellite">Satellite</button>
       </div>
 
       <!-- View controls (top-right, below basemap switcher) -->
@@ -719,10 +719,10 @@
   <script>
   /* ════════════════════════════════════════════════════════════════════════════
      HYDRAULIC GIS — Application monofichier
-     Version: 2026-05-04-v6
+     Version: 2026-05-05-v7
      Stack : MapLibre GL 5 · terra-draw · proj4 · Turf · file-saver
      ════════════════════════════════════════════════════════════════════════════ */
-  console.info('%c[HydraulicGIS] v6 — 2026-05-04', 'color:#3aa0ff;font-weight:bold;font-size:12px');
+  console.info('%c[HydraulicGIS] v7 — 2026-05-05', 'color:#3aa0ff;font-weight:bold;font-size:12px');
 
   /* ═══ 0. EARLY STATE INIT ═══════════════════════════════════════════════════
      These transient state values are referenced by panel render functions.
@@ -821,7 +821,7 @@
     features: [],         // tableau d'objets MapFeature
     selectedIds: [],
     activePanel: null,
-    basemap: 'dark',
+    basemap: 'satellite',  // default: satellite view with city/road labels
     listeners: { features: [], ui: [] },
   };
 
@@ -847,6 +847,13 @@
   function notifyFeatures() {
     saveState();
     state.listeners.features.forEach(fn => fn());
+  }
+  /* Like notifyFeatures, but doesn't trigger UI re-render. Used for style
+     changes from active inputs (sliders, color pickers) where re-rendering
+     would destroy the input element mid-drag. The map is still updated. */
+  function notifyFeaturesMapOnly() {
+    saveState();
+    if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap();
   }
   function notifyUi() {
     state.listeners.ui.forEach(fn => fn());
@@ -907,7 +914,7 @@
       id: newId('f'),
       name: nameForKind(kind),
       kind,
-      geojson: { type: 'Feature', geometry: geojson.geometry, properties: {} },
+      geojson: { type: 'Feature', geometry: geojson.geometry, properties: geojson.properties || {} },
       style: { ...DEFAULT_STYLE },
       metrics: computeMetrics(geojson, kind),
       createdAt: Date.now(),
@@ -945,7 +952,9 @@
     const f = state.features.find(x => x.id === id);
     if (f) {
       f.style = { ...f.style, ...patch }; f.updatedAt = Date.now();
-      notifyFeatures();
+      // Use map-only update so we don't re-render the Style panel mid-drag
+      // (which would destroy the input element being interacted with).
+      notifyFeaturesMapOnly();
     }
   }
 
@@ -1173,12 +1182,19 @@
       const copiedTerraIds = new Set();
 
       function refreshTerraDrawFilters() {
-        const exclude = ['!in', 'id', ...copiedTerraIds];
         const layerIds = ['td-polygon', 'td-polygon-outline', 'td-linestring', 'td-point'];
         for (const id of layerIds) {
           if (!map.getLayer(id)) continue;
-          try { map.setFilter(id, copiedTerraIds.size > 0 ? exclude : null); }
-          catch (err) { console.warn('[HydraulicGIS] setFilter failed on', id, err); }
+          try {
+            if (copiedTerraIds.size === 0) {
+              map.setFilter(id, null);
+            } else {
+              // Modern filter expression: keep features whose top-level id
+              // is NOT in the copied set.
+              const ids = Array.from(copiedTerraIds);
+              map.setFilter(id, ['!', ['in', ['id'], ['literal', ids]]]);
+            }
+          } catch (err) { console.warn('[HydraulicGIS] setFilter failed on', id, err); }
         }
       }
 
@@ -1214,20 +1230,42 @@
         });
 
         // When user deletes via terra-draw's Delete or Delete-Selection button,
-        // remove the matching feature(s) from OUR store too.
+        // remove the matching feature(s) from OUR store too. When user EDITS
+        // (drags a vertex, moves a shape), update OUR geometry so we don't
+        // end up with two copies (the old one in our store + the new one in
+        // terra-draw).
         td.on('change', (ids, type) => {
-          if (type !== 'delete') return;
-          const banTerraIds = new Set(ids);
-          const toRemove = state.features
-            .filter(f => f.geojson.properties && banTerraIds.has(f.geojson.properties._terraId))
-            .map(f => f.id);
-          if (toRemove.length) {
-            console.info('[HydraulicGIS] removing', toRemove.length, 'feature(s) deleted in terra-draw');
-            toRemove.forEach(removeFeature);
+          if (type === 'delete') {
+            const banTerraIds = new Set(ids);
+            const toRemove = state.features
+              .filter(f => f.geojson.properties && banTerraIds.has(f.geojson.properties._terraId))
+              .map(f => f.id);
+            if (toRemove.length) {
+              console.info('[HydraulicGIS] removing', toRemove.length, 'feature(s) deleted in terra-draw');
+              toRemove.forEach(removeFeature);
+            }
+            ids.forEach(id => copiedTerraIds.delete(id));
+            refreshTerraDrawFilters();
+          } else if (type === 'update') {
+            // Sync edits: find each feature by _terraId and replace its geometry.
+            const snap = td.getSnapshot();
+            let touched = 0;
+            for (const tid of ids) {
+              if (!copiedTerraIds.has(tid)) continue;
+              const tf = snap.find(x => x.id === tid);
+              if (!tf) continue;
+              const ours = state.features.find(f => f.geojson.properties && f.geojson.properties._terraId === tid);
+              if (!ours) continue;
+              ours.geojson.geometry = tf.geometry;
+              ours.metrics = computeMetrics({ type: 'Feature', geometry: tf.geometry }, ours.kind);
+              ours.updatedAt = Date.now();
+              touched++;
+            }
+            if (touched) {
+              console.info('[HydraulicGIS] updated', touched, 'feature(s) edited in terra-draw');
+              notifyFeatures();
+            }
           }
-          // Clean up from our tracking set too.
-          ids.forEach(id => copiedTerraIds.delete(id));
-          refreshTerraDrawFilters();
         });
       } else {
         console.warn('[HydraulicGIS] td.on is not a function — events disabled.');
@@ -1328,6 +1366,15 @@
         fabBadge.classList.remove('visible');
       }
 
+      // If the user is actively typing/dragging in an input INSIDE the panel,
+      // skip the panel innerHTML rewrite — it would destroy the focused element.
+      // We still update rail, badges, and overall visibility above.
+      const panelEl = document.getElementById('panel-body');
+      const sheetEl = document.getElementById('sheet-body');
+      const af = document.activeElement;
+      const skipPanelBody = panelEl && af && panelEl.contains(af) && /^(INPUT|SELECT|TEXTAREA)$/.test(af.tagName);
+      const skipSheetBody = sheetEl && af && sheetEl.contains(af) && /^(INPUT|SELECT|TEXTAREA)$/.test(af.tagName);
+
       // Render desktop panel
       if (this.isMobile()) {
         document.getElementById('sidebar-panel').classList.remove('visible');
@@ -1335,7 +1382,7 @@
         if (state.activePanel && state.activePanel !== 'menu') {
           document.getElementById('sidebar-panel').classList.add('visible');
           document.getElementById('panel-title').textContent = PANEL_TITLES[state.activePanel] || '';
-          renderPanel('panel-body', state.activePanel);
+          if (!skipPanelBody) renderPanel('panel-body', state.activePanel);
         } else {
           document.getElementById('sidebar-panel').classList.remove('visible');
         }
@@ -1345,7 +1392,7 @@
       if (state.activePanel) {
         const t = state.activePanel === 'menu' ? 'Outils' : (PANEL_TITLES[state.activePanel] || '');
         document.getElementById('sheet-title').textContent = t;
-        renderPanel('sheet-body', state.activePanel);
+        if (!skipSheetBody) renderPanel('sheet-body', state.activePanel);
         if (this.isMobile()) {
           document.getElementById('scrim').classList.add('visible');
           document.getElementById('sheet').classList.add('visible');
@@ -1898,13 +1945,16 @@
 
     function go() {
       errEl.textContent = '';
-      const raw = inp.value.trim();
+      let raw = inp.value.trim();
       if (!raw) { errEl.textContent = 'Saisissez une coordonnée.'; return; }
+      // Be lenient: strip parentheses/brackets and collapse whitespace.
+      raw = raw.replace(/[()[\]{}]/g, '').trim();
       const parts = raw.split(/[,;\s]+/).filter(Boolean);
-      if (parts.length < 2) { errEl.textContent = 'Format : deux nombres séparés par une virgule ou un espace.'; return; }
+      if (parts.length < 2) { errEl.textContent = 'Format attendu : deux nombres séparés par une virgule, un espace ou un point-virgule.'; return; }
       let a = parseCoord(parts[0]); if (a === null) a = parseFloat(parts[0].replace(',', '.'));
       let b = parseCoord(parts[1]); if (b === null) b = parseFloat(parts[1].replace(',', '.'));
-      if (isNaN(a) || isNaN(b)) { errEl.textContent = 'Coordonnées invalides.'; return; }
+      if (isNaN(a)) { errEl.textContent = `« ${parts[0]} » n'est pas un nombre valide.`; return; }
+      if (isNaN(b)) { errEl.textContent = `« ${parts[1]} » n'est pas un nombre valide.`; return; }
 
       let lng, lat;
       if (crsSel.value === 'wgs84') {
