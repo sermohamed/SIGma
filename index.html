@@ -181,11 +181,14 @@
       border: 1px solid var(--line) !important;
       box-shadow: 0 4px 12px rgba(0,0,0,0.4) !important;
     }
+    /* Generic MapLibre control buttons (zoom, etc.) get transparent backgrounds.
+       But terra-draw buttons need their inline background-image (data URI) preserved,
+       so we use background-color (not the shorthand background) here. */
     .maplibregl-ctrl-group button {
-      background: transparent !important;
+      background-color: transparent !important;
       width: 36px !important; height: 36px !important;
     }
-    .maplibregl-ctrl-group button:hover { background: rgba(255,255,255,0.05) !important; }
+    .maplibregl-ctrl-group button:hover { background-color: rgba(255,255,255,0.05) !important; }
     .maplibregl-ctrl-group button + button { border-top: 1px solid var(--line) !important; }
     .maplibregl-ctrl-group button .maplibregl-ctrl-icon {
       filter: invert(0.9) brightness(1.1);
@@ -213,31 +216,32 @@
     /* ════════════════════════════════════════════════════════════════
        terra-draw control — dark theme styling
 
-       The library renders <button> elements whose SVG icons use fill="#5f6368"
-       (medium grey) — invisible on our dark background. We:
-         1. give buttons a dark surface that contrasts with the map
-         2. invert the SVG icons so they appear white on dark
-         3. style active/disabled states to match our palette
+       The library uses inline `background: url(data:image/svg+xml,...)` with
+       SVG fill="#5f6368" (medium grey). On our dark background that's barely
+       visible, so we apply a CSS filter that lightens it to white.
+       IMPORTANT: never use the `background:` shorthand on these buttons —
+       it would erase the inline data URI icon. Always use `background-color`.
        ════════════════════════════════════════════════════════════════ */
     button[class*="maplibregl-terradraw-"] {
-      background-color: var(--bg-2) !important;
       width: 36px !important;
       height: 36px !important;
       border: none !important;
+      cursor: pointer;
+      /* Lighten the grey icon (#5f6368 → near-white) without inverting
+         the transparent button background. invert(0.7) on the SVG gives
+         a light-grey icon that's clearly visible on dark. */
+      filter: invert(0.7) brightness(1.4);
     }
     button[class*="maplibregl-terradraw-"]:hover {
-      background-color: var(--bg-3) !important;
+      background-color: rgba(255, 255, 255, 0.06) !important;
+      filter: invert(0.85) brightness(1.5);
     }
-    /* Invert the dark grey icons to bright white so they're visible. */
-    button[class*="maplibregl-terradraw-"]:not(.active) {
-      filter: invert(1) brightness(1.5);
-    }
-    /* Active state: brand-blue background, white icon (no inversion needed). */
+    /* Active state: brand-blue background, almost-white icon. */
     button.maplibregl-terradraw-add-control.active {
       background-color: var(--brand) !important;
-      filter: brightness(8) !important;
+      filter: invert(1) brightness(8);
     }
-    /* Disabled state: dim and not clickable. */
+    /* Disabled state. */
     button[class*="maplibregl-terradraw-"]:disabled {
       opacity: 0.35;
       cursor: not-allowed;
@@ -715,8 +719,10 @@
   <script>
   /* ════════════════════════════════════════════════════════════════════════════
      HYDRAULIC GIS — Application monofichier
+     Version: 2026-05-04-v6
      Stack : MapLibre GL 5 · terra-draw · proj4 · Turf · file-saver
      ════════════════════════════════════════════════════════════════════════════ */
+  console.info('%c[HydraulicGIS] v6 — 2026-05-04', 'color:#3aa0ff;font-weight:bold;font-size:12px');
 
   /* ═══ 0. EARLY STATE INIT ═══════════════════════════════════════════════════
      These transient state values are referenced by panel render functions.
@@ -1121,6 +1127,16 @@
         if (f.style.showLabel) labels.push(enriched);
       } else if (f.kind === 'line') {
         lines.push(enriched);
+        if (f.style.showLabel) {
+          // Place label at the line's midpoint (along its length, not centroid).
+          try {
+            const totalKm = turf.length(f.geojson, { units: 'kilometers' });
+            if (totalKm > 0) {
+              const mid = turf.along(f.geojson, totalKm / 2, { units: 'kilometers' });
+              labels.push({ type: 'Feature', geometry: mid.geometry, properties: props });
+            }
+          } catch (e) { /* skip label if turf fails on degenerate line */ }
+        }
       } else {
         polys.push(enriched);
         if (f.style.showLabel) {
@@ -1150,29 +1166,23 @@
       map.addControl(drawControl, 'top-left');
       console.info('[HydraulicGIS] terra-draw control added.');
 
-      // After terra-draw renders its layers (td-point, td-linestring, td-polygon),
-      // we keep them — features need to live there for Select/Delete buttons to work —
-      // but make them visually invisible so only OUR styled layers show. Our layers
-      // (app-poly-fill etc.) are added BEFORE terra-draw, so terra-draw's are on top
-      // by default; we hide them by setting opacity to 0.
-      function hideTerraDrawLayers() {
+      // Track which terra-draw feature IDs have been copied to our store.
+      // We then apply a filter to terra-draw's render layers so those features
+      // don't double-draw. The currently-being-drawn feature (NOT yet in this
+      // set) keeps rendering normally, so the user sees their drawing live.
+      const copiedTerraIds = new Set();
+
+      function refreshTerraDrawFilters() {
+        const exclude = ['!in', 'id', ...copiedTerraIds];
         const layerIds = ['td-polygon', 'td-polygon-outline', 'td-linestring', 'td-point'];
         for (const id of layerIds) {
           if (!map.getLayer(id)) continue;
-          const lay = map.getStyle().layers.find(l => l.id === id);
-          if (!lay) continue;
-          if (lay.type === 'fill') {
-            map.setPaintProperty(id, 'fill-opacity', 0);
-          } else if (lay.type === 'line') {
-            map.setPaintProperty(id, 'line-opacity', 0);
-          } else if (lay.type === 'circle') {
-            map.setPaintProperty(id, 'circle-opacity', 0);
-            map.setPaintProperty(id, 'circle-stroke-opacity', 0);
-          }
+          try { map.setFilter(id, copiedTerraIds.size > 0 ? exclude : null); }
+          catch (err) { console.warn('[HydraulicGIS] setFilter failed on', id, err); }
         }
       }
 
-      // Subscribe to terra-draw events. We only push to our store on `finish`,
+      // Subscribe to terra-draw events. We push to our store on `finish`,
       // and we DO NOT remove from terra-draw (keeping its copy alive enables
       // the Select and Delete buttons).
       const td = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
@@ -1187,9 +1197,17 @@
             const kind = kindFromGeom(f.geometry, mode);
             const newF = addFeature({ type: 'Feature', geometry: f.geometry, properties: { _terraId: id } }, kind);
             console.info('[HydraulicGIS] added feature', newF.id, 'kind=' + kind);
-            // After terra-draw's render runs (next frame), hide its visible layers
-            // so only our styled copies appear.
-            requestAnimationFrame(hideTerraDrawLayers);
+            // Now exclude this feature from terra-draw's rendering so we
+            // don't see it twice. App-line / app-poly-fill render OUR copy.
+            copiedTerraIds.add(id);
+            requestAnimationFrame(refreshTerraDrawFilters);
+            // The wrapper enables/disables Select & Delete based on whether
+            // any features exist. Force a re-check now in case it didn't fire.
+            try {
+              if (typeof drawControl.toggleButtonsWhenNoFeature === 'function') {
+                drawControl.toggleButtonsWhenNoFeature();
+              }
+            } catch (err) { /* ignore */ }
           } catch (err) {
             console.error('[HydraulicGIS] error in finish handler:', err);
           }
@@ -1199,7 +1217,6 @@
         // remove the matching feature(s) from OUR store too.
         td.on('change', (ids, type) => {
           if (type !== 'delete') return;
-          // Map terra-draw IDs back to our app feature IDs via the _terraId property.
           const banTerraIds = new Set(ids);
           const toRemove = state.features
             .filter(f => f.geojson.properties && banTerraIds.has(f.geojson.properties._terraId))
@@ -1208,13 +1225,19 @@
             console.info('[HydraulicGIS] removing', toRemove.length, 'feature(s) deleted in terra-draw');
             toRemove.forEach(removeFeature);
           }
+          // Clean up from our tracking set too.
+          ids.forEach(id => copiedTerraIds.delete(id));
+          refreshTerraDrawFilters();
         });
       } else {
         console.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
 
-      // Also re-hide terra-draw layers any time the map style is added to.
-      map.on('styledata', () => requestAnimationFrame(hideTerraDrawLayers));
+      // NOTE: we do NOT hide terra-draw layers on every styledata event,
+      // because terra-draw fires that event during active drawing and our
+      // hide would erase the line/polygon being drawn. Hiding only happens
+      // in the `finish` callback above (post-RAF) and after a basemap change
+      // (handled in setBasemap below).
     } catch (e) {
       console.error('[HydraulicGIS] Échec d\'initialisation de terra-draw :', e);
       drawControl = null;
