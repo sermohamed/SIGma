@@ -173,7 +173,7 @@
 
     /* ═════ MAP AREA ═════ */
     #map-area { position: relative; flex: 1; min-width: 0; height: 100%; }
-    #map { position: absolute; inset: 0; }
+    #map { position: absolute; inset: 0; touch-action: none; -webkit-tap-highlight-color: transparent; }
 
     /* MapLibre control overrides for dark theme */
     .maplibregl-ctrl-group {
@@ -719,7 +719,7 @@
   <script>
   /* ════════════════════════════════════════════════════════════════════════════
      HYDRAULIC GIS — Application monofichier
-     Version: 2026-05-05-v8
+     Version: 2026-05-05-v9
      Stack : MapLibre GL 5 · terra-draw · proj4 · Turf · file-saver
      ════════════════════════════════════════════════════════════════════════════ */
 
@@ -743,7 +743,7 @@
     return { info: safe('info'), warn: safe('warn'), error: safe('error'), log: safe('log') };
   })();
 
-  log.info('%c[HydraulicGIS] v8 — 2026-05-05', 'color:#3aa0ff;font-weight:bold;font-size:12px');
+  log.info('%c[HydraulicGIS] v9 — 2026-05-05', 'color:#3aa0ff;font-weight:bold;font-size:12px');
 
   /* ═══ 0. EARLY STATE INIT ═══════════════════════════════════════════════════
      These transient state values are referenced by panel render functions.
@@ -1046,9 +1046,55 @@
     center: [-5.0, 33.5],
     zoom: 5,
     attributionControl: { compact: true },
+
+    // ─── Gesture configuration to avoid conflicts with terra-draw ───
+    // 2D-only: no pitch, no rotation. Removes touchpad/two-finger gestures
+    // that can be misinterpreted as drawing taps on phones.
     pitchWithRotate: false,
+    dragRotate: false,
+    touchPitch: false,
     maxPitch: 0,
+    bearingSnap: 0,
+
+    // ─── WebGL stability ───
+    // antialias=false reduces GPU memory pressure on mobile (less likely
+    // to lose context), and preserveDrawingBuffer=false lets the GPU
+    // recycle buffers between frames.
+    antialias: false,
+    preserveDrawingBuffer: false,
+
+    // Lower fadeDuration so freshly-drawn features paint immediately
+    // (default 300ms can make in-progress lines look invisible).
+    fadeDuration: 0,
   });
+
+  // doubleClickZoom collides with the second tap of "click-move" rectangle/
+  // circle drawing on phones — the same tap zooms the map AND finishes the
+  // shape. We disable it when terra-draw is in any draw mode (not select).
+  // It stays enabled in select mode so users can still double-tap to zoom.
+  function setDoubleClickZoom(enable) {
+    try {
+      if (enable) map.doubleClickZoom.enable();
+      else map.doubleClickZoom.disable();
+    } catch (_) {}
+  }
+
+  // WebGL context loss recovery — on mobile GPUs the WebGL context can be
+  // dropped under memory pressure (when tabs in background, after long use).
+  // We catch the loss event and trigger a restore. MapLibre handles the
+  // reconnection but we re-install our app layers after.
+  map.getCanvas().addEventListener('webglcontextlost', (e) => {
+    log.warn('[HydraulicGIS] WebGL context lost — preventing default to allow restore.');
+    e.preventDefault();
+  }, false);
+  map.getCanvas().addEventListener('webglcontextrestored', () => {
+    log.info('[HydraulicGIS] WebGL context restored — reinstalling app layers.');
+    try {
+      installAppLayers();
+      syncFeaturesToMap();
+      updateGrid();
+    } catch (err) { log.error('[HydraulicGIS] restore failed:', err); }
+  }, false);
 
   map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
   map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
@@ -1079,7 +1125,23 @@
   let drawControl = null;
 
   function installAppLayers() {
-    if (map.getSource(SRC_POINTS)) return;
+    if (!map.isStyleLoaded()) {
+      // Wait until the style is ready, then retry. This avoids the
+      // "all my objects vanished" symptom after a basemap switch.
+      map.once('idle', () => { try { installAppLayers(); syncFeaturesToMap(); } catch(_) {} });
+      return;
+    }
+    // Idempotent: if everything's already installed, nothing to do.
+    if (map.getSource(SRC_POINTS) && map.getLayer('app-poly-fill') && map.getLayer('app-line') && map.getLayer('app-point') && map.getLayer('app-label')) {
+      return;
+    }
+    // Otherwise, clean partial state then re-create everything.
+    for (const lid of ['app-poly-fill', 'app-poly-stroke', 'app-line', 'app-point', 'app-label']) {
+      if (map.getLayer(lid)) { try { map.removeLayer(lid); } catch (_) {} }
+    }
+    for (const sid of [SRC_POINTS, SRC_LINES, SRC_POLYS, SRC_LABELS]) {
+      if (map.getSource(sid)) { try { map.removeSource(sid); } catch (_) {} }
+    }
     const empty = { type: 'FeatureCollection', features: [] };
     map.addSource(SRC_POINTS, { type: 'geojson', data: empty });
     map.addSource(SRC_LINES, { type: 'geojson', data: empty });
@@ -1143,6 +1205,13 @@
 
   function syncFeaturesToMap() {
     if (!map.isStyleLoaded()) return;
+    // Defensive: if our sources are missing (style change, WebGL restore,
+    // basemap switch), re-install them. Without this guard the setData()
+    // calls below would throw and the user's drawn objects would vanish.
+    if (!map.getSource(SRC_POINTS)) {
+      try { installAppLayers(); }
+      catch (err) { log.warn('[HydraulicGIS] layer reinstall failed:', err); return; }
+    }
     const points = [], lines = [], polys = [], labels = [];
     for (const f of state.features) {
       if (!f.style.visible) continue;
@@ -1175,10 +1244,16 @@
         }
       }
     }
-    map.getSource(SRC_POINTS).setData({ type: 'FeatureCollection', features: points });
-    map.getSource(SRC_LINES).setData({ type: 'FeatureCollection', features: lines });
-    map.getSource(SRC_POLYS).setData({ type: 'FeatureCollection', features: polys });
-    map.getSource(SRC_LABELS).setData({ type: 'FeatureCollection', features: labels });
+    try {
+      map.getSource(SRC_POINTS).setData({ type: 'FeatureCollection', features: points });
+      map.getSource(SRC_LINES).setData({ type: 'FeatureCollection', features: lines });
+      map.getSource(SRC_POLYS).setData({ type: 'FeatureCollection', features: polys });
+      map.getSource(SRC_LABELS).setData({ type: 'FeatureCollection', features: labels });
+      // Force a repaint so the new data is visible immediately on mobile.
+      map.triggerRepaint();
+    } catch (err) {
+      log.warn('[HydraulicGIS] syncFeaturesToMap setData failed:', err);
+    }
   }
 
   function installDrawControl() {
@@ -1237,17 +1312,22 @@
       // td-polygon-outline), boost their visual weight so the user can see their
       // own drawing — especially on phones where finger placement obscures small
       // points and thin lines. Also makes the FIRST tapped point clearly visible.
+      // Sizes are tuned for touch screens.
       function boostTerraDrawStyles() {
         try {
           if (map.getLayer('td-point')) {
-            map.setPaintProperty('td-point', 'circle-radius', 9);
+            // Bigger point for finger visibility (default is 6, we use 10).
+            map.setPaintProperty('td-point', 'circle-radius', 10);
             map.setPaintProperty('td-point', 'circle-color', '#ffd24a');
             map.setPaintProperty('td-point', 'circle-stroke-color', '#0b0f14');
-            map.setPaintProperty('td-point', 'circle-stroke-width', 2);
+            map.setPaintProperty('td-point', 'circle-stroke-width', 2.5);
+            map.setPaintProperty('td-point', 'circle-opacity', 1);
+            map.setPaintProperty('td-point', 'circle-stroke-opacity', 1);
           }
           if (map.getLayer('td-linestring')) {
             map.setPaintProperty('td-linestring', 'line-color', '#ffd24a');
-            map.setPaintProperty('td-linestring', 'line-width', 3);
+            map.setPaintProperty('td-linestring', 'line-width', 4);
+            map.setPaintProperty('td-linestring', 'line-opacity', 1);
           }
           if (map.getLayer('td-polygon')) {
             map.setPaintProperty('td-polygon', 'fill-color', '#ffd24a');
@@ -1255,7 +1335,8 @@
           }
           if (map.getLayer('td-polygon-outline')) {
             map.setPaintProperty('td-polygon-outline', 'line-color', '#ffd24a');
-            map.setPaintProperty('td-polygon-outline', 'line-width', 3);
+            map.setPaintProperty('td-polygon-outline', 'line-width', 4);
+            map.setPaintProperty('td-polygon-outline', 'line-opacity', 1);
           }
         } catch (err) { log.warn('[HydraulicGIS] boost styles failed:', err); }
       }
@@ -1265,7 +1346,14 @@
       // `styledata` (which fires when sources/layers change), and re-apply
       // our visual boost. This is safe: we set explicit values that won't
       // accumulate or cascade.
-      map.on('styledata', () => requestAnimationFrame(boostTerraDrawStyles));
+      // Also force a map repaint so freshly-drawn shapes appear without
+      // requiring the user to pan/zoom first (mobile WebGL repaint quirk).
+      map.on('styledata', () => {
+        requestAnimationFrame(() => {
+          boostTerraDrawStyles();
+          try { map.triggerRepaint(); } catch (_) {}
+        });
+      });
 
       function refreshTerraDrawFilters() {
         const layerIds = ['td-polygon', 'td-polygon-outline', 'td-linestring', 'td-point'];
@@ -1289,6 +1377,14 @@
       // the Select and Delete buttons).
       const td = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
       if (td && typeof td.on === 'function') {
+        // Mobile WebGL repaint quirk: terra-draw updates its source data, but
+        // MapLibre may not re-render until the user pans/zooms. We force a
+        // repaint on EVERY change event (including 'create' for the first tap).
+        // Cheap operation; safe to call frequently.
+        td.on('change', (ids, type) => {
+          try { map.triggerRepaint(); } catch (_) {}
+        });
+
         td.on('finish', (id, ctx) => {
           try {
             log.info('[HydraulicGIS] terra-draw finish:', id, ctx);
@@ -1302,7 +1398,10 @@
             // Now exclude this feature from terra-draw's rendering so we
             // don't see it twice. App-line / app-poly-fill render OUR copy.
             copiedTerraIds.add(id);
-            requestAnimationFrame(refreshTerraDrawFilters);
+            requestAnimationFrame(() => {
+              refreshTerraDrawFilters();
+              try { map.triggerRepaint(); } catch (_) {}
+            });
             // The wrapper enables/disables Select & Delete based on whether
             // any features exist. Force a re-check now in case it didn't fire.
             try {
@@ -1356,6 +1455,31 @@
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
+
+      // Disable doubleClickZoom while in any draw mode — otherwise the second
+      // tap of click-move rectangle/circle drawing also triggers zoom-in,
+      // which interferes with the drawing finish.
+      // Also poll for mode changes since the wrapper's API for subscribing
+      // varies; using a simple polling check keeps this robust.
+      function syncGesturesToMode() {
+        try {
+          const mode = td && typeof td.getMode === 'function' ? td.getMode() : 'static';
+          const isDrawing = mode && mode !== 'static' && mode !== 'select';
+          setDoubleClickZoom(!isDrawing);
+        } catch (_) {}
+      }
+      // Try the wrapper's mode-changed event first.
+      if (typeof drawControl.on === 'function') {
+        try { drawControl.on('mode-changed', syncGesturesToMode); }
+        catch (_) {}
+      }
+      // Fallback: also call sync after every td.change event (a mode change
+      // generally triggers a change too).
+      if (td && typeof td.on === 'function') {
+        td.on('change', syncGesturesToMode);
+      }
+      // Initial sync.
+      syncGesturesToMode();
 
       // NOTE: we do NOT hide terra-draw layers on every styledata event,
       // because terra-draw fires that event during active drawing and our
