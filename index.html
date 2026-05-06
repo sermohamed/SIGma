@@ -1415,6 +1415,14 @@
       // Apply only to the point radius — keep terra-draw's own colors.
       // We re-apply on every styledata event since the layers may not exist
       // yet when this runs the first time.
+      // Boost vertex point size. Layers are 'td-point', 'td-linestring',
+      // 'td-polygon', 'td-polygon-outline' (confirmed from the bundled UMD).
+      // The default circle-radius reads ["get","pointWidth"] from properties,
+      // so a constant override here is fine. We re-apply on styledata AND on
+      // every terra-draw change because td-point is created lazily — the
+      // first time the user taps to start a draw, the layer is added inside
+      // a requestAnimationFrame from terra-draw's own render() method, so it
+      // does NOT exist when our earlier styledata handler ran.
       function boostTerraDrawPointSize() {
         try {
           if (map.getLayer('td-point')) {
@@ -1427,17 +1435,68 @@
       const td = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
       if (td && typeof td.on === 'function') {
 
-        // On every change (create / update / delete / styling), force a repaint
-        // AND re-evaluate whether Select/Delete buttons should be enabled.
-        // This is the mobile WebGL fix: data updates without a repaint stay
-        // invisible until the user pans/zooms.
-        // We call triggerRepaint multiple times (now, next frame, and 50ms later)
-        // to maximize the chance of the in-progress shape becoming visible
-        // immediately on iOS Safari and Android WebView.
+        // ─── Mobile first-point invisibility fix ───────────────────────────
+        //
+        // ROOT CAUSE (verified by reading the maplibre-gl-terradraw UMD bundle):
+        // terra-draw's render() schedules its work inside requestAnimationFrame.
+        // On the very first vertex of a fresh draw, the GeoJSON source AND the
+        // 'td-point' layer are CREATED inside that rAF. Our 'change' callback
+        // fires BEFORE that rAF executes, so:
+        //   - calling triggerRepaint() now → no layer exists yet, useless
+        //   - calling triggerRepaint() in the next rAF → races with terra-draw's
+        //     own rAF; on iOS Safari the WebGL backing store often hasn't been
+        //     committed for the just-added layer
+        //   - setTimeout 50ms → sometimes works, sometimes doesn't
+        // That's why the 1st tap shows nothing and the 2nd tap "magically" makes
+        // the 1st point visible: the 2nd tap is a fresh pointer event that
+        // forces a full repaint cycle when the layer already exists.
+        //
+        // FIX: schedule the repaint TWO rAFs ahead (so we're guaranteed to be
+        // AFTER terra-draw's own rAF that creates the layer), and on the very
+        // first change of a new draw also call map.resize(). resize() forces
+        // MapLibre to invalidate and re-commit the WebGL canvas, which is the
+        // only reliable way to wake the GPU pipeline on iOS Safari for a layer
+        // that was just added. resize() is a no-op for layout if the size
+        // hasn't actually changed, so the perf cost is negligible.
+        let _firstChangeOfDraw = true;
+
         td.on('change', (ids, type) => {
-          try { map.triggerRepaint(); } catch (_) {}
-          requestAnimationFrame(() => { try { map.triggerRepaint(); } catch (_) {} });
+          // Re-apply vertex boost — td-point may have just been created
+          boostTerraDrawPointSize();
+
+          // Wait two rAFs so terra-draw's internal rAF (which creates the
+          // layer on first point) has run before we ask the GPU to paint.
+          requestAnimationFrame(() => {
+            requestAnimationFrame(() => {
+              try { map.triggerRepaint(); } catch (_) {}
+              boostTerraDrawPointSize();
+
+              // First-point WebGL wake-up for iOS Safari / Android Chrome.
+              // We only do this once per draw to avoid layout thrash.
+              if (_firstChangeOfDraw) {
+                _firstChangeOfDraw = false;
+                try { map.resize(); } catch (_) {}
+              }
+            });
+          });
+
+          // Reset the flag when nothing is being drawn so the wake-up runs
+          // again for the next shape.
+          try {
+            const snap = td.getSnapshot ? td.getSnapshot() : [];
+            const anyInProgress = snap.some(f =>
+              f && f.properties && (f.properties.mode !== 'select')
+              && !f.properties.selected
+            );
+            if (snap.length === 0 || !anyInProgress && type === 'delete') {
+              _firstChangeOfDraw = true;
+            }
+          } catch (_) {}
+
+          // Belt-and-braces: extra repaint at +50ms in case rAF was throttled
+          // (e.g. tab in background, low-power mode on iOS).
           setTimeout(() => { try { map.triggerRepaint(); } catch (_) {} }, 50);
+
           try { drawControl.toggleButtonsWhenNoFeature(); } catch (_) {}
           updateHud(`change ${type} (${ids ? ids.length : 0})`);
         });
@@ -1446,6 +1505,10 @@
         // Calques panel, exports, measurements. The map already shows it
         // because terra-draw still owns the rendering.
         td.on('finish', (id, ctx) => {
+          // Re-arm the first-point WebGL wake-up for the next shape the user
+          // will draw. Without this, only the very first shape of the session
+          // benefits from the resize() call.
+          _firstChangeOfDraw = true;
           try {
             log.info('[HydraulicGIS] terra-draw finish:', id, ctx);
             const snap = td.getSnapshot();
