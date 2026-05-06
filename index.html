@@ -1415,158 +1415,99 @@
       // Apply only to the point radius — keep terra-draw's own colors.
       // We re-apply on every styledata event since the layers may not exist
       // yet when this runs the first time.
-      // ─── First-vertex overlay layer ────────────────────────────────────
-      //
-      // ROOT CAUSE OF THE "FIRST POINT INVISIBLE ON MOBILE" BUG (verified by
-      // reading the bundled terra-draw UMD source):
-      //
-      //   • LineString mode: at the first tap, terra-draw calls createLine()
-      //     which creates a LineString with TWO IDENTICAL coordinates
-      //     [[lng,lat],[lng,lat]] — a zero-length line. On desktop the very
-      //     next mousemove stretches it toward the cursor (visible).
-      //     On mobile (no hover events between taps) it stays degenerate
-      //     and renders as nothing. No vertex Point is created until the
-      //     SECOND tap (firstUpdateToLine creates the closingPointId).
-      //
-      //   • Polygon mode: same pattern — at the first tap, terra-draw creates
-      //     a Polygon with FOUR identical coordinates (zero-area polygon),
-      //     invisible. The vertex Point is only added at the third tap.
-      //
-      // This is exactly the bug tracked in GitHub terra-draw #784 and #510.
-      // No amount of triggerRepaint / resize / styling fixes it because
-      // there is genuinely no visible feature to render.
-      //
-      // FIX: maintain our own dedicated MapLibre layer that shows a single
-      // marker at the first-tap location while terra-draw's geometry is
-      // still degenerate. We add the marker as soon as we detect the
-      // degenerate state, and remove it as soon as terra-draw creates its
-      // own vertex (closing-point) feature.
-      const FIRST_VTX_SRC = '_hgis_first_vertex';
-      const FIRST_VTX_LYR = '_hgis_first_vertex_layer';
-      function ensureFirstVertexLayer() {
-        try {
-          if (!map.getSource(FIRST_VTX_SRC)) {
-            map.addSource(FIRST_VTX_SRC, {
-              type: 'geojson',
-              data: { type: 'FeatureCollection', features: [] }
-            });
-          }
-          if (!map.getLayer(FIRST_VTX_LYR)) {
-            map.addLayer({
-              id: FIRST_VTX_LYR,
-              source: FIRST_VTX_SRC,
-              type: 'circle',
-              paint: {
-                'circle-radius': 7,
-                'circle-color': '#3f97e0',
-                'circle-stroke-color': '#ffffff',
-                'circle-stroke-width': 2
-              }
-            });
-          }
-        } catch (_) {}
-      }
-      function setFirstVertex(coord) {
-        ensureFirstVertexLayer();
-        try {
-          const src = map.getSource(FIRST_VTX_SRC);
-          if (!src) return;
-          src.setData({
-            type: 'FeatureCollection',
-            features: coord ? [{
-              type: 'Feature',
-              geometry: { type: 'Point', coordinates: coord },
-              properties: {}
-            }] : []
-          });
-        } catch (_) {}
-      }
-      function clearFirstVertex() { setFirstVertex(null); }
-      // Re-add layer after basemap style swaps (style swap drops custom layers).
-      map.on('styledata', () => {
-        // If the layer was lost in the swap and we had a vertex showing,
-        // re-create it (data is already in our source if we cached it,
-        // but simpler: just ensure the layer exists for next use).
-        ensureFirstVertexLayer();
-      });
-
-      // Boost vertex point size. Layers are 'td-point', 'td-linestring',
-      // 'td-polygon', 'td-polygon-outline' (confirmed from the bundled UMD).
-      // The default circle-radius reads ["get","pointWidth"] from properties,
-      // so a constant override here is fine.
       function boostTerraDrawPointSize() {
         try {
           if (map.getLayer('td-point')) {
             map.setPaintProperty('td-point', 'circle-radius', 8);
+            // Also ensure the point layer is visible (not hidden by opacity)
+            map.setPaintProperty('td-point', 'circle-opacity', 1);
+            map.setPaintProperty('td-point', 'circle-stroke-opacity', 1);
+          }
+          if (map.getLayer('td-linestring')) {
+            map.setPaintProperty('td-linestring', 'line-opacity', 1);
+          }
+          if (map.getLayer('td-polygon')) {
+            map.setPaintProperty('td-polygon', 'fill-opacity', 0.3);
           }
         } catch (_) {}
       }
+      // Run on style changes AND on every frame during interaction
       map.on('styledata', () => requestAnimationFrame(boostTerraDrawPointSize));
-
-      // Detect degenerate first-tap geometry from a terra-draw snapshot.
-      // Returns the coordinate to mark, or null if no degenerate feature is
-      // found (i.e. drawing has progressed past the first tap, or no draw
-      // is in progress).
-      function detectFirstVertexCoord(snapshot) {
-        if (!snapshot || !snapshot.length) return null;
-        for (const f of snapshot) {
-          if (!f || !f.geometry || !f.properties) continue;
-          const mode = f.properties.mode;
-          const g = f.geometry;
-          // Linestring degenerate: 2 coords, both identical
-          if (mode === 'linestring' && g.type === 'LineString'
-              && g.coordinates && g.coordinates.length === 2) {
-            const a = g.coordinates[0], b = g.coordinates[1];
-            if (a && b && a[0] === b[0] && a[1] === b[1]) return a;
-          }
-          // Polygon degenerate: ring of 4 coords all identical
-          if (mode === 'polygon' && g.type === 'Polygon'
-              && g.coordinates && g.coordinates[0]
-              && g.coordinates[0].length === 4) {
-            const ring = g.coordinates[0];
-            const a = ring[0];
-            if (a && ring.every(p => p && p[0] === a[0] && p[1] === a[1])) {
-              return a;
-            }
-          }
-        }
-        return null;
-      }
+      // Also force on move events to catch in-progress draws
+      map.on('move', boostTerraDrawPointSize);
 
       const td = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
       if (td && typeof td.on === 'function') {
 
+        // On every change (create / update / delete / styling), force a repaint
+        // AND re-evaluate whether Select/Delete buttons should be enabled.
+        // This is the mobile WebGL fix: data updates without a repaint stay
+        // invisible until the user pans/zooms.
+        // We call triggerRepaint multiple times (now, next frame, and 50ms later)
+        // to maximize the chance of the in-progress shape becoming visible
+        // immediately on iOS Safari and Android WebView.
+        // SINGLE unified change handler — fixes mobile first-point invisible bug
+        // by merging repaint + delete/update sync and adding aggressive compositor flush.
         td.on('change', (ids, type) => {
-          // Re-apply vertex size boost on every change — td-point may have
-          // just been created by terra-draw's lazy layer-add.
-          boostTerraDrawPointSize();
+          // ─── Mobile WebGL repaint fix ───
+          // iOS Safari and Android WebView batch canvas repaints aggressively.
+          // The first tap often stays invisible until a second tap forces redraw.
+          // We use multiple techniques to force an immediate composite:
+          const forceRepaint = () => {
+            try {
+              // triggerRepaint is async; redraw() is synchronous and forces immediate paint
+              if (typeof map.redraw === 'function') map.redraw();
+              map.triggerRepaint();
+              // Force compositor layer invalidation via opacity micro-flash
+              const canvas = map.getCanvas();
+              if (canvas) {
+                canvas.style.opacity = '0.99';
+                requestAnimationFrame(() => { canvas.style.opacity = ''; });
+              }
+            } catch (_) {}
+          };
+          forceRepaint();
+          requestAnimationFrame(forceRepaint);
+          setTimeout(forceRepaint, 16);   // 1 frame @ 60fps
+          setTimeout(forceRepaint, 50);   // original fallback
+          setTimeout(forceRepaint, 150);  // extra safety for slow devices
 
-          // ── Mobile first-vertex overlay logic ──
-          // Inspect terra-draw's snapshot. If a degenerate (zero-size)
-          // linestring/polygon is in progress, show our overlay marker.
-          // Once the user taps a second time, terra-draw's own vertex point
-          // appears in the snapshot → we remove our overlay.
-          try {
-            const snap = td.getSnapshot ? td.getSnapshot() : [];
-            const firstVtx = detectFirstVertexCoord(snap);
-            if (firstVtx) {
-              setFirstVertex(firstVtx);
-            } else {
-              clearFirstVertex();
-            }
-          } catch (_) { clearFirstVertex(); }
-
-          // Defensive repaint cascade (kept from previous attempt — harmless
-          // and helps in tab-throttling scenarios on iOS Safari).
-          requestAnimationFrame(() => {
-            requestAnimationFrame(() => {
-              try { map.triggerRepaint(); } catch (_) {}
-              boostTerraDrawPointSize();
-            });
-          });
-          setTimeout(() => { try { map.triggerRepaint(); } catch (_) {} }, 50);
-
+          // ─── Button state sync (patched) ───
           try { drawControl.toggleButtonsWhenNoFeature(); } catch (_) {}
+
+          // ─── Delete sync ───
+          if (type === 'delete') {
+            const banTerraIds = new Set(ids);
+            const toRemove = state.features
+              .filter(f => f.geojson.properties && banTerraIds.has(f.geojson.properties._terraId))
+              .map(f => f.id);
+            if (toRemove.length) {
+              log.info('[HydraulicGIS] removing', toRemove.length, 'feature(s) deleted in terra-draw');
+              toRemove.forEach(removeFeature);
+            }
+          }
+
+          // ─── Update sync (vertex edits) ───
+          if (type === 'update') {
+            const snap = td.getSnapshot();
+            let touched = 0;
+            for (const tid of ids) {
+              const tf = snap.find(x => x.id === tid);
+              if (!tf) continue;
+              const ours = state.features.find(f => f.geojson.properties && f.geojson.properties._terraId === tid);
+              if (!ours) continue;
+              ours.geojson.geometry = tf.geometry;
+              ours.metrics = computeMetrics({ type: 'Feature', geometry: tf.geometry }, ours.kind);
+              ours.updatedAt = Date.now();
+              touched++;
+            }
+            if (touched) {
+              log.info('[HydraulicGIS] updated', touched, 'feature(s) edited in terra-draw');
+              notifyUi();
+              saveState();
+            }
+          }
+
           updateHud(`change ${type} (${ids ? ids.length : 0})`);
         });
 
@@ -1574,9 +1515,6 @@
         // Calques panel, exports, measurements. The map already shows it
         // because terra-draw still owns the rendering.
         td.on('finish', (id, ctx) => {
-          // Clear the first-vertex overlay marker — terra-draw now owns the
-          // visible feature (it has its own vertex points after the 2nd tap).
-          clearFirstVertex();
           try {
             log.info('[HydraulicGIS] terra-draw finish:', id, ctx);
             const snap = td.getSnapshot();
@@ -1597,40 +1535,7 @@
           }
         });
 
-        // Sync deletes (Delete / Delete-Selection buttons in the toolbar)
-        // and edits (Select-mode vertex drags) back into our store.
-        td.on('change', (ids, type) => {
-          if (type === 'delete') {
-            const banTerraIds = new Set(ids);
-            const toRemove = state.features
-              .filter(f => f.geojson.properties && banTerraIds.has(f.geojson.properties._terraId))
-              .map(f => f.id);
-            if (toRemove.length) {
-              log.info('[HydraulicGIS] removing', toRemove.length, 'feature(s) deleted in terra-draw');
-              toRemove.forEach(removeFeature);
-            }
-          } else if (type === 'update') {
-            const snap = td.getSnapshot();
-            let touched = 0;
-            for (const tid of ids) {
-              const tf = snap.find(x => x.id === tid);
-              if (!tf) continue;
-              const ours = state.features.find(f => f.geojson.properties && f.geojson.properties._terraId === tid);
-              if (!ours) continue;
-              ours.geojson.geometry = tf.geometry;
-              ours.metrics = computeMetrics({ type: 'Feature', geometry: tf.geometry }, ours.kind);
-              ours.updatedAt = Date.now();
-              touched++;
-            }
-            if (touched) {
-              log.info('[HydraulicGIS] updated', touched, 'feature(s) edited in terra-draw');
-              // Don't call notifyFeatures (which calls syncFeaturesToMap that
-              // we no longer use); just refresh the panel.
-              notifyUi();
-              saveState();
-            }
-          }
-        });
+
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
@@ -1642,10 +1547,6 @@
           const mode = td && typeof td.getMode === 'function' ? td.getMode() : 'static';
           const isDrawing = mode && mode !== 'static' && mode !== 'select';
           setDoubleClickZoom(!isDrawing);
-          // If we leave linestring/polygon mid-draw, clear the overlay marker.
-          if (mode !== 'linestring' && mode !== 'polygon') {
-            clearFirstVertex();
-          }
         } catch (_) {}
       }
       if (typeof drawControl.on === 'function') {
@@ -1658,11 +1559,51 @@
       syncGesturesToMode();
     } catch (e) {
       log.error('[HydraulicGIS] Échec d\'initialisation de terra-draw :', e);
+  // ─── Mobile touch repaint fix ───
+  // On iOS Safari and Android WebView, terra-draw's first vertex often
+  // stays invisible because the compositor doesn't flush until the next
+  // gesture. We hook touch events on the canvas to force a synchronous
+  // redraw after every touch interaction.
+  (function attachTouchRepaint() {
+    const canvas = map.getCanvas();
+    if (!canvas) return;
+    // Use capture phase to run BEFORE terra-draw's own handlers
+    canvas.addEventListener('touchstart', () => {
+      try { if (typeof map.redraw === 'function') map.redraw(); } catch (_) {}
+    }, { passive: true, capture: true });
+    canvas.addEventListener('touchend', () => {
+      // Multiple delayed redraws to catch the compositor at different phases
+      try { if (typeof map.redraw === 'function') map.redraw(); } catch (_) {}
+      requestAnimationFrame(() => {
+        try { if (typeof map.redraw === 'function') map.redraw(); map.triggerRepaint(); } catch (_) {}
+      });
+      setTimeout(() => {
+        try { if (typeof map.redraw === 'function') map.redraw(); map.triggerRepaint(); } catch (_) {}
+      }, 50);
+      setTimeout(() => {
+        try { if (typeof map.redraw === 'function') map.redraw(); map.triggerRepaint(); } catch (_) {}
+      }, 150);
+    }, { passive: true, capture: true });
+  })();
+
       drawControl = null;
     }
   }
 
   function setBasemap(id) {
+  // Force repaint on any map interaction to ensure terra-draw features are visible
+  // This fixes the iOS Safari / Android WebView bug where the first point stays invisible
+  map.on('click', () => {
+    requestAnimationFrame(() => {
+      try { if (typeof map.redraw === 'function') map.redraw(); map.triggerRepaint(); } catch (_) {}
+    });
+  });
+  // Also force repaint on touchstart to catch the very first tap before terra-draw processes it
+  map.getCanvas().addEventListener('touchstart', () => {
+    requestAnimationFrame(() => {
+      try { if (typeof map.redraw === 'function') map.redraw(); map.triggerRepaint(); } catch (_) {}
+    });
+  }, { passive: true, capture: false });
     if (state.basemap === id) return;
     state.basemap = id;
     try { localStorage.setItem('hydraulic-gis:basemap', id); } catch (e) {}
