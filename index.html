@@ -742,6 +742,20 @@
     </div>
   </div>
 
+  <!-- Name prompt modal: shown after a draw finishes so the user can name
+       the feature, or accept the default. Reusing the .confirm-* CSS. -->
+  <div id="prompt-bg" class="confirm-bg" onclick="if(event.target===this) ui.closePrompt()">
+    <div class="confirm-box">
+      <h3 id="prompt-title">Nommer l'objet</h3>
+      <p id="prompt-msg" style="margin-bottom:10px;">Choisissez un nom ou laissez le nom par défaut.</p>
+      <input type="text" id="prompt-input" class="field" style="width:100%; box-sizing:border-box; margin-bottom:14px;" />
+      <div class="actions">
+        <button class="btn btn-ghost" onclick="ui.closePrompt()">Annuler</button>
+        <button class="btn btn-solid" id="prompt-ok">OK</button>
+      </div>
+    </div>
+  </div>
+
   <script>
   /* ════════════════════════════════════════════════════════════════════════════
      HYDRAULIC GIS — Application monofichier
@@ -895,8 +909,11 @@
   }
   function parseCoord(s) {
     if (!s) return null;
-    s = s.trim().replace(/,/g, '.');
-    const decM = s.match(/^(-?\d+(\.\d+)?)°?$/);
+    // Normalise whitespace: collapse all whitespace (including NBSP, thin
+    // space, figure space) so a pasted "500 000,00" becomes "500000.00".
+    s = String(s).trim().replace(/[\u00A0\u202F\u2007]/g, ' ').replace(/,/g, '.');
+    // For pure decimal: also strip internal whitespace (thousand separators)
+    const decM = s.replace(/\s+/g, '').match(/^(-?\d+(\.\d+)?)°?$/);
     if (decM) return parseFloat(decM[1]);
     const re = /^(-?\d+(?:\.\d+)?)\s*°\s*(?:(\d+(?:\.\d+)?)\s*['′]\s*(?:(\d+(?:\.\d+)?)\s*["″]?\s*)?)?\s*([NSEW])?$/i;
     const m = s.match(re);
@@ -1078,7 +1095,32 @@
     }
   }
 
-  function setStyle(id, patch) {
+  // Show the rename modal for a freshly-created feature. Default value is
+  // the auto-generated name. If the user types something different, we
+  // rename. If they hit Cancel or Escape, we keep the default. Either way,
+  // the feature stays — the modal is just a naming opportunity.
+  function promptFeatureName(id) {
+    const f = state.features.find(x => x.id === id);
+    if (!f) return;
+    const kindLabel = ({
+      point: 'point',
+      line: 'ligne',
+      polygon: 'polygone',
+      rectangle: 'rectangle',
+      circle: 'cercle',
+      freehand: 'forme libre',
+    })[f.kind] || 'objet';
+    ui.prompt(
+      `Nommer le ${kindLabel}`,
+      `Choisissez un nom ou validez avec « ${f.name} ».`,
+      f.name,
+      (newName) => {
+        if (newName && newName !== f.name) renameFeature(id, newName);
+      }
+    );
+  }
+
+  let setStyle = function (id, patch) {
     const f = state.features.find(x => x.id === id);
     if (f) {
       f.style = { ...f.style, ...patch }; f.updatedAt = Date.now();
@@ -1086,7 +1128,7 @@
       // (which would destroy the input element being interacted with).
       notifyFeaturesMapOnly();
     }
-  }
+  };
 
   function toggleVisibility(id) {
     const f = state.features.find(x => x.id === id);
@@ -1137,6 +1179,10 @@
         },
       },
       layers: [
+        // maxzoom on the LAYER lets MapLibre overzoom (re-stretch lower-z
+        // tiles when the user zooms past the source's true max). Without
+        // this, zooming past ~19 shows blank tiles instead of pixelated
+        // imagery. minzoom 0 lets the world view work.
         { id: 'esri-imagery', type: 'raster', source: 'esri', minzoom: 0, maxzoom: 22 },
         { id: 'esri-roads', type: 'raster', source: 'esri-transportation', minzoom: 0, maxzoom: 22 },
         { id: 'esri-labels', type: 'raster', source: 'esri-labels', minzoom: 0, maxzoom: 22 },
@@ -1154,6 +1200,13 @@
     style: BASEMAPS[state.basemap],
     center: [-5.0, 33.5],
     zoom: 5,
+    // Bound zoom to what every basemap actually serves. ESRI World Imagery
+    // tops out around z19 (above that we'd see "map data not yet available"
+    // grey tiles); Carto dark-matter/positron go to z19. Below z2 the world
+    // wraps poorly on a 2D Mercator and Carto sources sometimes return blank
+    // tiles. These bounds keep every basemap visually consistent.
+    minZoom: 2,
+    maxZoom: 19,
     attributionControl: { compact: true },
 
     // ─── Gesture configuration to avoid conflicts with terra-draw ───
@@ -1257,15 +1310,20 @@
       layout: {
         'text-field': ['get', 'name'],
         'text-font': ['Noto Sans Regular'],
-        'text-size': 12,
-        'text-offset': [0, 1.2],
+        'text-size': 13,
+        'text-offset': [0, 1.4],
         'text-anchor': 'top',
-        'text-allow-overlap': false,
+        // Allow overlap is critical: when a polygon fill covers the centroid,
+        // and a basemap road label is nearby, our user-name labels were being
+        // skipped by the placement engine. We force-show them.
+        'text-allow-overlap': true,
+        'text-ignore-placement': true,
       },
       paint: {
         'text-color': '#f6f8fb',
         'text-halo-color': '#0b0f14',
-        'text-halo-width': 1.4,
+        'text-halo-width': 2,
+        'text-halo-blur': 0.5,
       },
     });
   }
@@ -1313,6 +1371,17 @@
     } catch (err) {
       log.warn('[HydraulicGIS] label setData failed:', err);
     }
+
+    // Critical: re-raise app-label ABOVE all terra-draw layers (td-*) every
+    // time we sync. terra-draw lazily creates td-point / td-linestring /
+    // td-polygon when the user draws, and they get added at the TOP of the
+    // layer stack — covering our label text. We move app-label back to the
+    // top so labels stay visible over polygons and lines.
+    try {
+      if (map.getLayer('app-label')) {
+        map.moveLayer('app-label');  // no beforeId → moves to top
+      }
+    } catch (_) {}
 
     // Sync visibility from our store to terra-draw: hide invisible features
     // by removing them from terra-draw's store. (We restore on re-show.)
@@ -1431,6 +1500,75 @@
       drawControl = new MaplibreTerradrawControl.MaplibreTerradrawControl(controlOpts);
       map.addControl(drawControl, 'top-left');
       log.info('[HydraulicGIS] terra-draw control added.');
+
+      // ─── Per-feature style injection ─────────────────────────────────
+      // terra-draw's `setModeStyles` accepts FUNCTIONS for style values
+      // (verified by reading the bundle: `getStylingValue` does
+      //   `typeof e == "function" ? e(feature) : e`).
+      // We install resolver functions that look up our store by terraId
+      // and return the user-configured style (stroke/fill/width/opacity).
+      // Features without a matching store entry (e.g. mid-draw) fall back
+      // to the default blue. This is what makes the Style panel actually
+      // affect rendering.
+      function installPerFeatureStyles() {
+        const td2 = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
+        if (!td2 || typeof td2.setModeStyles !== 'function') return;
+        const ourFeatureForTerraId = (terraId) => {
+          if (!terraId) return null;
+          for (const f of state.features) {
+            if (f.geojson && f.geojson.properties && f.geojson.properties._terraId === terraId) {
+              return f;
+            }
+          }
+          return null;
+        };
+        const lineStyles = {
+          lineStringColor: (feature) => {
+            const ours = ourFeatureForTerraId(feature.id);
+            return ours ? ours.style.stroke : '#3f97e0';
+          },
+          lineStringWidth: (feature) => {
+            const ours = ourFeatureForTerraId(feature.id);
+            return ours ? ours.style.strokeWidth : 4;
+          },
+        };
+        const polyStyles = {
+          fillColor:    (feature) => { const o = ourFeatureForTerraId(feature.id); return o ? o.style.fill   : '#3f97e0'; },
+          outlineColor: (feature) => { const o = ourFeatureForTerraId(feature.id); return o ? o.style.stroke : '#3f97e0'; },
+          outlineWidth: (feature) => { const o = ourFeatureForTerraId(feature.id); return o ? o.style.strokeWidth : 4; },
+          fillOpacity:  (feature) => { const o = ourFeatureForTerraId(feature.id); return o ? o.style.fillOpacity : 0.3; },
+        };
+        const pointStyles = {
+          pointColor: (feature) => { const o = ourFeatureForTerraId(feature.id); return o ? o.style.stroke : '#3f97e0'; },
+          pointWidth: (feature) => { const o = ourFeatureForTerraId(feature.id); return o ? Math.max(4, o.style.strokeWidth * 3) : 6; },
+          pointOutlineColor: '#ffffff',
+          pointOutlineWidth: 1.5,
+        };
+        try { td2.setModeStyles('linestring', lineStyles); } catch (e) { log.warn('setModeStyles linestring failed', e); }
+        try { td2.setModeStyles('polygon',    polyStyles); } catch (e) { log.warn('setModeStyles polygon failed', e); }
+        try { td2.setModeStyles('rectangle',  polyStyles); } catch (e) { log.warn('setModeStyles rectangle failed', e); }
+        try { td2.setModeStyles('circle',     polyStyles); } catch (e) { log.warn('setModeStyles circle failed', e); }
+        try { td2.setModeStyles('point',      pointStyles); } catch (e) { log.warn('setModeStyles point failed', e); }
+        log.info('[HydraulicGIS] per-feature style resolvers installed.');
+      }
+      installPerFeatureStyles();
+
+      // Force terra-draw to re-evaluate styles. There is no public refresh
+      // method, but mutating the feature's properties through the public
+      // `addFeatures`/`removeFeatures` API would lose the terraId. The
+      // simplest reliable trigger is a no-op map.triggerRepaint AFTER any
+      // store change — terra-draw re-reads styleFeature on each render.
+      function refreshTerraDrawStyles() {
+        try { map.triggerRepaint(); } catch (_) {}
+      }
+      // Hook the style refresh into our store. We do this by replacing
+      // setStyle to also trigger a terra-draw repaint.
+      const _origSetStyle = setStyle;
+      setStyle = function (id, patch) {
+        _origSetStyle(id, patch);
+        refreshTerraDrawStyles();
+      };
+
 
       // ─── Bug workaround: wrapper disables Select/Delete during selection ───
       // The wrapper's toggleButtonsWhenNoFeature() calls getFeatures(false),
@@ -1748,6 +1886,10 @@
               }
             } catch (_) {}
             try { map.triggerRepaint(); } catch (_) {}
+            // Open the rename prompt — let the user accept the default or
+            // type a custom name. The modal is non-blocking; if the user
+            // dismisses it the default name remains.
+            promptFeatureName(newF.id);
           } catch (err) {
             log.error('[HydraulicGIS] error in finish handler:', err);
           }
@@ -1786,6 +1928,59 @@
               saveState();
             }
           }
+        });
+
+        // ─── Auto-select our store row when user picks on the map ────────
+        // Two paths: (a) terra-draw 'select' event (when in Select mode and
+        // user taps a feature) and (b) a regular map click that hit-tests
+        // the td-* layers (so the user gets selection even outside Select
+        // mode). Both update state.selectedIds so the Style/Measure/etc.
+        // panels become useful immediately without a detour through the
+        // Calques panel.
+        if (typeof td.on === 'function') {
+          td.on('select', (terraId) => {
+            try {
+              const ours = state.features.find(f =>
+                f.geojson && f.geojson.properties && f.geojson.properties._terraId === terraId);
+              if (!ours) return;
+              if (!state.selectedIds.includes(ours.id)) {
+                state.selectedIds = [ours.id];
+                notifyUi();
+                log.info('[HydraulicGIS] auto-selected feature from terra-draw select:', ours.id);
+              }
+            } catch (err) { log.warn('[HydraulicGIS] td select sync failed:', err); }
+          });
+          td.on('deselect', () => {
+            // Don't auto-clear when terra-draw deselects — the user often
+            // wants the selection to persist (e.g. they entered Select to
+            // pick, then opened the Style panel; clearing on deselect would
+            // empty the panel as soon as they tap away).
+          });
+        }
+        // Tap-to-select outside Select mode: hit-test td-* layers on click.
+        map.on('click', (e) => {
+          try {
+            const mode = td && td.getMode && td.getMode();
+            // In Select mode, terra-draw already handled it via the 'select'
+            // event above, so skip. In any drawing mode, the click is part
+            // of drawing — definitely don't reroute it.
+            if (mode && mode !== 'static') return;
+            const layers = ['td-point', 'td-linestring', 'td-polygon']
+              .filter(id => map.getLayer(id));
+            if (layers.length === 0) return;
+            const hits = map.queryRenderedFeatures(e.point, { layers });
+            if (!hits || hits.length === 0) return;
+            // queryRenderedFeatures returns the rendered feature (with the
+            // terra-draw-injected style props), and `id` is the terra-draw
+            // feature id we stored as _terraId.
+            const terraId = hits[0].id;
+            const ours = state.features.find(f =>
+              f.geojson && f.geojson.properties && f.geojson.properties._terraId === terraId);
+            if (!ours) return;
+            state.selectedIds = [ours.id];
+            notifyUi();
+            log.info('[HydraulicGIS] tap-selected feature:', ours.id);
+          } catch (err) { log.warn('[HydraulicGIS] tap-select failed:', err); }
         });
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
@@ -1900,6 +2095,24 @@
   onFeatures(syncFeaturesToMap);
 
   // Refresh grid (and any other view-bound layers) when the map moves.
+  // Live grid update: listen to 'move' (fires continuously during pan/zoom,
+  // including pinch-zoom on touch) instead of 'moveend' so the grid stays
+  // glued to the current viewport. Throttled via rAF so we never run more
+  // than once per frame, keeping perf smooth on mobile.
+  let _gridUpdateRafQueued = false;
+  function scheduleGridUpdate() {
+    if (!gridState.enabled) return;
+    if (_gridUpdateRafQueued) return;
+    _gridUpdateRafQueued = true;
+    requestAnimationFrame(() => {
+      _gridUpdateRafQueued = false;
+      try { updateGrid(); } catch (_) {}
+    });
+  }
+  map.on('move', scheduleGridUpdate);
+  map.on('zoom', scheduleGridUpdate);
+  // Final precise update at the end of the gesture in case rAFs were
+  // throttled (low-power mode) and the live updates were stale.
   map.on('moveend', () => { if (gridState.enabled) updateGrid(); });
   map.on('zoomend', () => { if (gridState.enabled) updateGrid(); });
 
@@ -1941,6 +2154,31 @@
     },
     closeConfirm() {
       document.getElementById('confirm-bg').classList.remove('visible');
+    },
+    prompt(title, msg, defaultValue, onOk) {
+      document.getElementById('prompt-title').textContent = title;
+      document.getElementById('prompt-msg').textContent = msg;
+      const input = document.getElementById('prompt-input');
+      input.value = defaultValue || '';
+      const okBtn = document.getElementById('prompt-ok');
+      const onSubmit = () => {
+        const v = input.value.trim();
+        this.closePrompt();
+        if (typeof onOk === 'function') onOk(v);
+      };
+      okBtn.onclick = onSubmit;
+      input.onkeydown = (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); onSubmit(); }
+        else if (e.key === 'Escape') { this.closePrompt(); }
+      };
+      document.getElementById('prompt-bg').classList.add('visible');
+      // Defer focus + select-all so iOS shows the keyboard
+      setTimeout(() => { input.focus(); input.select(); }, 50);
+    },
+    closePrompt() {
+      document.getElementById('prompt-bg').classList.remove('visible');
+      const input = document.getElementById('prompt-input');
+      if (input) input.onkeydown = null;
     },
     render() {
       // Update rail
@@ -2373,14 +2611,24 @@
 
     function parseInputs() {
       const c = CRS_BY_ID[fromSel.value];
+      // Normalise the input: strip whitespace including NBSP/thin space,
+      // remove thousands separators, normalise commas to dots. This makes
+      // the parser tolerant to copy-pasted values from the history panel
+      // (which formats with French locale: "500 000,00").
+      const norm = (s) => {
+        if (!s) return '';
+        return String(s)
+          .replace(/[\s\u00A0\u202F\u2007]/g, '')   // any whitespace + NBSP + narrow NBSP + figure space
+          .replace(/,/g, '.');
+      };
       if (c.isGeographic) {
         const x = parseCoord(xIn.value);
         const y = parseCoord(yIn.value);
         if (x === null || y === null) return null;
         return [x, y];
       }
-      const x = parseFloat(xIn.value.replace(',', '.'));
-      const y = parseFloat(yIn.value.replace(',', '.'));
+      const x = parseFloat(norm(xIn.value));
+      const y = parseFloat(norm(yIn.value));
       if (isNaN(x) || isNaN(y)) return null;
       return [x, y];
     }
@@ -2390,6 +2638,26 @@
       pickLbl.textContent = 'Cliquez sur la carte…';
       const canvas = map.getCanvas();
       canvas.style.cursor = 'crosshair';
+      // Put terra-draw into a no-op mode so it doesn't intercept our tap.
+      // Otherwise, if the user had recently used a draw mode (or select),
+      // terra-draw is still listening on pointerdown via its capture-phase
+      // adapter, and our map.once('click') never fires.
+      let prevMode = null;
+      try {
+        const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
+        if (td && typeof td.getMode === 'function' && typeof td.setMode === 'function') {
+          prevMode = td.getMode();
+          if (prevMode !== 'static') td.setMode('static');
+        }
+      } catch (_) {}
+      const restoreMode = () => {
+        try {
+          const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
+          if (td && prevMode && prevMode !== 'static' && typeof td.setMode === 'function') {
+            td.setMode(prevMode);
+          }
+        } catch (_) {}
+      };
       const onClick = (e) => {
         const { lng, lat } = e.lngLat;
         const c = CRS_BY_ID[fromSel.value];
@@ -2399,9 +2667,10 @@
         pickModeOff = null;
         canvas.style.cursor = '';
         pickLbl.textContent = 'Choisir sur la carte';
+        restoreMode();
       };
       map.once('click', onClick);
-      pickModeOff = () => { map.off('click', onClick); canvas.style.cursor = ''; };
+      pickModeOff = () => { map.off('click', onClick); canvas.style.cursor = ''; restoreMode(); };
     });
 
     root.querySelector('#cc-swap').addEventListener('click', () => {
@@ -2432,7 +2701,14 @@
 
   /* ═══ 12. PANEL CONTENT — IMPORT / EXPORT ═══════════════════════════════════ */
   function renderFiles() {
-    const empty = state.features.length === 0;
+    const visibleCount = state.features.filter(f => f.style && f.style.visible).length;
+    const totalCount = state.features.length;
+    const noneVisible = visibleCount === 0;
+    const exportHint = totalCount === 0
+      ? 'Aucun objet à exporter.'
+      : noneVisible
+        ? `${totalCount} objet(s) au total, mais tous masqués (œil fermé). Activez l'œil dans « Calques » pour les inclure.`
+        : `${visibleCount} sur ${totalCount} objet(s) seront exportés (ceux dont l'œil est actif dans « Calques »).`;
     return `
       <div class="stack">
         <div>
@@ -2449,8 +2725,9 @@
 
         <div>
           <label class="field-label">Exporter</label>
-          ${empty
-            ? `<p style="font-size:12px; color:var(--ink-2); margin:0;">Aucun objet à exporter.</p>`
+          <p style="font-size:12px; color:var(--ink-2); margin:0 0 8px;">${escapeHtml(exportHint)}</p>
+          ${noneVisible
+            ? ''
             : `<div class="export-grid">
                 <button class="export-btn" data-export="geojson">GeoJSON</button>
                 <button class="export-btn" data-export="kml">KML</button>
@@ -3171,8 +3448,16 @@
   }
 
   function doExport(format) {
-    const features = state.features;
-    if (features.length === 0) return;
+    // Export all features whose visibility (eye icon) is currently ON.
+    // The user explicitly asked for this — they want to control export
+    // contents from the Calques panel by toggling visibility, not by
+    // selecting layers. Hidden features are omitted.
+    const features = state.features.filter(f => f.style && f.style.visible);
+    if (features.length === 0) {
+      log.warn('[HydraulicGIS] export: no visible features');
+      return;
+    }
+    log.info('[HydraulicGIS] exporting', features.length, 'visible feature(s) as', format);
     const fc = {
       type: 'FeatureCollection',
       features: features.map(f => ({
