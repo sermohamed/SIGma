@@ -597,6 +597,30 @@
     .confirm-box h3 { margin: 0 0 8px; font-size: 16px; }
     .confirm-box p { margin: 0 0 16px; color: var(--ink-1); font-size: 14px; }
     .confirm-box .actions { display: flex; gap: 8px; justify-content: flex-end; }
+
+    /* Pick-on-map banner — visible while the user is tapping the map
+       to choose a coordinate. Sits above everything except modals,
+       so it remains visible whether the sheet is open or closed. */
+    #pick-banner {
+      display: none;
+      position: fixed;
+      top: max(12px, env(safe-area-inset-top));
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 80;
+      background: rgba(58, 160, 255, 0.95);
+      color: #fff;
+      font-size: 13px;
+      font-weight: 500;
+      padding: 10px 16px;
+      border-radius: 999px;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.4);
+      cursor: pointer;
+      max-width: calc(100vw - 32px);
+      text-align: center;
+      pointer-events: auto;
+    }
+    #pick-banner.visible { display: block; }
   </style>
 </head>
 <body>
@@ -942,6 +966,7 @@
   const state = {
     features: [],         // tableau d'objets MapFeature
     selectedIds: [],
+    multiSelectMode: false,  // when true, taps add to selection instead of replacing it
     activePanel: null,
     basemap: 'satellite',  // default: satellite view with city/road labels
     listeners: { features: [], ui: [] },
@@ -1159,6 +1184,12 @@
           type: 'raster',
           tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}'],
           tileSize: 256,
+          // Tell MapLibre the actual max zoom level the server has tiles for.
+          // Without this, MapLibre requests z20+ tiles, gets 404s, and shows
+          // grey "map data not yet available" tiles. With it, MapLibre stops
+          // requesting at z19 and overzooms (stretches z19 pixels) for z20+.
+          // ESRI World Imagery maxes out at z19 in most regions worldwide.
+          maxzoom: 19,
           attribution: 'Tiles © Esri — World Imagery',
         },
         // Transparent overlay with city names, road labels, etc.
@@ -1168,6 +1199,7 @@
           type: 'raster',
           tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Boundaries_and_Places/MapServer/tile/{z}/{y}/{x}'],
           tileSize: 256,
+          maxzoom: 19,
           attribution: 'Labels © Esri',
         },
         // Transportation overlay for roads and routes.
@@ -1175,6 +1207,7 @@
           type: 'raster',
           tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}'],
           tileSize: 256,
+          maxzoom: 19,
           attribution: 'Roads © Esri',
         },
       },
@@ -1239,6 +1272,19 @@
       if (enable) map.doubleClickZoom.enable();
       else map.doubleClickZoom.disable();
     } catch (_) {}
+  }
+
+  // Lazy-create a top-of-screen banner used during "pick on map" mode.
+  // The banner is created once on first use and then toggled via the
+  // .visible class. Tapping it cancels the pick.
+  function ensurePickBanner() {
+    let banner = document.getElementById('pick-banner');
+    if (banner) return banner;
+    banner = document.createElement('div');
+    banner.id = 'pick-banner';
+    banner.textContent = '📍 Touchez la carte pour choisir un point — touchez ici pour annuler';
+    document.body.appendChild(banner);
+    return banner;
   }
 
   // WebGL context loss recovery — on mobile GPUs the WebGL context can be
@@ -1383,11 +1429,31 @@
       }
     } catch (_) {}
 
-    // Sync visibility from our store to terra-draw: hide invisible features
-    // by removing them from terra-draw's store. (We restore on re-show.)
-    // For now, simple version: just sync a "hidden ids" set into terra-draw
-    // by selectively re-creating features. Skipped in this pass — visibility
-    // toggle is a known limitation we can address in a follow-up.
+    // Sync visibility from our store to terra-draw's render layers.
+    // The eye icon in Calques toggles f.style.visible. We were previously
+    // only filtering the label feature, so the SHAPE remained visible even
+    // when the eye was closed. We now also apply a MapLibre filter on each
+    // td-* layer that excludes the hidden features by their terra-draw id.
+    // The id is the top-level GeoJSON feature.id that terra-draw assigns
+    // when it pushes data into its source — same id we stored in
+    // f.geojson.properties._terraId on creation.
+    try {
+      const hiddenTerraIds = state.features
+        .filter(f => f.style && f.style.visible === false)
+        .map(f => f.geojson && f.geojson.properties && f.geojson.properties._terraId)
+        .filter(Boolean);
+      const filterExpr = hiddenTerraIds.length === 0
+        ? null   // no filter (show all)
+        : ['!', ['in', ['id'], ['literal', hiddenTerraIds]]];
+      for (const lyr of ['td-point', 'td-linestring', 'td-polygon', 'td-polygon-outline']) {
+        if (map.getLayer(lyr)) {
+          try { map.setFilter(lyr, filterExpr); }
+          catch (e) { log.warn('[HydraulicGIS] setFilter on', lyr, 'failed:', e); }
+        }
+      }
+    } catch (err) {
+      log.warn('[HydraulicGIS] visibility filter sync failed:', err);
+    }
     try { map.triggerRepaint(); } catch (_) {}
   }
 
@@ -1500,6 +1566,59 @@
       drawControl = new MaplibreTerradrawControl.MaplibreTerradrawControl(controlOpts);
       map.addControl(drawControl, 'top-left');
       log.info('[HydraulicGIS] terra-draw control added.');
+
+      // ─── Inject "multi-select" toggle button ─────────────────────────
+      // Sits inside the terra-draw toolbar between the Select button and
+      // the Delete-selection button. When toggled on, taps on the map add
+      // to the existing selection instead of replacing it (see selection
+      // handlers further below). The button is created lazily because
+      // terra-draw renders its toolbar asynchronously after addControl.
+      function installMultiSelectButton() {
+        const tries = [0, 50, 200, 500, 1000];
+        for (const delay of tries) {
+          setTimeout(() => {
+            // Already installed?
+            if (document.getElementById('hgis-multi-select-btn')) return;
+            const deleteBtn = document.querySelector('.maplibregl-terradraw-delete-selection-button');
+            if (!deleteBtn || !deleteBtn.parentNode) return;
+            const btn = document.createElement('button');
+            btn.id = 'hgis-multi-select-btn';
+            btn.type = 'button';
+            btn.title = 'Sélection multiple';
+            btn.setAttribute('aria-label', 'Activer la sélection multiple');
+            // Match the styling of other terra-draw buttons. We embed the
+            // SVG inline since the existing buttons use background-image
+            // CSS classes, but a custom SVG with two checkboxes reads more
+            // clearly than re-using one of their generic icons.
+            btn.innerHTML = `
+              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#5f6368" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
+                <rect x="3" y="3" width="8" height="8" rx="1"/>
+                <polyline points="5,7 7,9 9,5" stroke-width="2.4"/>
+                <rect x="13" y="13" width="8" height="8" rx="1"/>
+                <polyline points="15,17 17,19 19,15" stroke-width="2.4"/>
+              </svg>`;
+            // Reuse the CSS that already styles all .maplibregl-terradraw-*
+            // buttons (40x40, hover, active states).
+            btn.className = 'maplibregl-terradraw-add-control';
+            btn.style.cssText = 'background-image:none; background-color:transparent;';
+            btn.addEventListener('click', () => {
+              state.multiSelectMode = !state.multiSelectMode;
+              btn.classList.toggle('active', state.multiSelectMode);
+              if (!state.multiSelectMode) {
+                // Leaving multi-select: keep current selection but stop adding.
+                log.info('[HydraulicGIS] multi-select OFF (kept ' + state.selectedIds.length + ' selected)');
+              } else {
+                log.info('[HydraulicGIS] multi-select ON');
+              }
+              notifyUi();
+            });
+            // Insert BEFORE delete-selection so order is: ... Select, Multi, Delete-selection
+            deleteBtn.parentNode.insertBefore(btn, deleteBtn);
+            log.info('[HydraulicGIS] multi-select button installed.');
+          }, delay);
+        }
+      }
+      installMultiSelectButton();
 
       // ─── Per-feature style injection ─────────────────────────────────
       // terra-draw's `setModeStyles` accepts FUNCTIONS for style values
@@ -1872,10 +1991,43 @@
           // visible feature (it has its own vertex points after the 2nd tap).
           clearFirstVertex();
           try {
-            log.info('[HydraulicGIS] terra-draw finish:', id, ctx);
+            log.info('[HydraulicGIS] terra-draw finish:', id, 'action=' + (ctx && ctx.action));
+            // CRITICAL: terra-draw fires 'finish' for several actions, not
+            // just the initial draw:
+            //   • action: "draw"               — initial creation (create our row)
+            //   • action: "dragCoordinate"     — vertex was moved (geometry changed)
+            //   • action: "dragFeature"        — whole shape was moved
+            //   • action: "dragCoordinateResize" — rectangle/circle was resized
+            // Without this guard we were creating a NEW row every edit,
+            // producing duplicate labels and re-opening the rename prompt.
+            // For non-draw actions we just sync the geometry of the
+            // already-existing row.
+            const action = ctx && ctx.action;
             const snap = td.getSnapshot();
             const f = snap.find(x => x.id === id);
             if (!f) return;
+
+            // Check if we already have a row for this terra-draw feature.
+            const existing = state.features.find(x =>
+              x.geojson && x.geojson.properties && x.geojson.properties._terraId === id);
+
+            if (existing) {
+              // Edit — sync geometry, recompute metrics, do NOT prompt for name.
+              existing.geojson.geometry = f.geometry;
+              existing.metrics = computeMetrics(existing.geojson, existing.kind);
+              existing.updatedAt = Date.now();
+              notifyFeatures();
+              try { map.triggerRepaint(); } catch (_) {}
+              log.info('[HydraulicGIS] synced geometry for existing feature', existing.id, 'on action=' + action);
+              return;
+            }
+
+            // No existing row → genuine new feature. Only treat as creation
+            // when the action says so (defensive — falls through to creation
+            // also when action is undefined, e.g. older terra-draw bundles).
+            if (action && action !== 'draw') {
+              log.warn('[HydraulicGIS] finish with action=' + action + ' but no matching row — creating row anyway');
+            }
             const mode = (f.properties && f.properties.mode) || (ctx && ctx.mode) || '';
             const kind = kindFromGeom(f.geometry, mode);
             const newF = addFeature({ type: 'Feature', geometry: f.geometry, properties: { _terraId: id } }, kind);
@@ -1943,11 +2095,18 @@
               const ours = state.features.find(f =>
                 f.geojson && f.geojson.properties && f.geojson.properties._terraId === terraId);
               if (!ours) return;
-              if (!state.selectedIds.includes(ours.id)) {
+              // Multi-select: add to existing selection (toggle if already in).
+              // Single-select: replace selection.
+              if (state.multiSelectMode) {
+                const idx = state.selectedIds.indexOf(ours.id);
+                if (idx === -1) state.selectedIds = [...state.selectedIds, ours.id];
+                else state.selectedIds = state.selectedIds.filter(id => id !== ours.id);
+              } else {
+                if (state.selectedIds.length === 1 && state.selectedIds[0] === ours.id) return;
                 state.selectedIds = [ours.id];
-                notifyUi();
-                log.info('[HydraulicGIS] auto-selected feature from terra-draw select:', ours.id);
               }
+              notifyUi();
+              log.info('[HydraulicGIS] td select:', ours.id, 'multi=' + state.multiSelectMode, 'total=' + state.selectedIds.length);
             } catch (err) { log.warn('[HydraulicGIS] td select sync failed:', err); }
           });
           td.on('deselect', () => {
@@ -1977,9 +2136,16 @@
             const ours = state.features.find(f =>
               f.geojson && f.geojson.properties && f.geojson.properties._terraId === terraId);
             if (!ours) return;
-            state.selectedIds = [ours.id];
+            // Apply same multi-select semantics as terra-draw select event.
+            if (state.multiSelectMode) {
+              const idx = state.selectedIds.indexOf(ours.id);
+              if (idx === -1) state.selectedIds = [...state.selectedIds, ours.id];
+              else state.selectedIds = state.selectedIds.filter(id => id !== ours.id);
+            } else {
+              state.selectedIds = [ours.id];
+            }
             notifyUi();
-            log.info('[HydraulicGIS] tap-selected feature:', ours.id);
+            log.info('[HydraulicGIS] tap-selected feature:', ours.id, 'multi=' + state.multiSelectMode, 'total=' + state.selectedIds.length);
           } catch (err) { log.warn('[HydraulicGIS] tap-select failed:', err); }
         });
       } else {
@@ -2598,6 +2764,22 @@
     fromSel.value = 'wgs84';
     toSel.value = 'lambert-maroc-1';
 
+    // If a pick was performed while the panel was closed (mobile flow),
+    // restore the source CRS used at pick-time and inject the values now.
+    if (ui._pendingPickResult) {
+      const pending = ui._pendingPickResult;
+      ui._pendingPickResult = null;
+      fromSel.value = pending.fromCrs;
+      // updateLabels() runs below — the values must be set AFTER it so the
+      // placeholder doesn't fight with the actual content. We defer via
+      // setTimeout because updateLabels() is registered as the 'change'
+      // handler on fromSel and won't run until the field actually changes.
+      setTimeout(() => {
+        xIn.value = pending.x;
+        yIn.value = pending.y;
+      }, 0);
+    }
+
     function updateLabels() {
       const c = CRS_BY_ID[fromSel.value];
       xLbl.textContent = c.axes[0];
@@ -2650,6 +2832,19 @@
           if (prevMode !== 'static') td.setMode('static');
         }
       } catch (_) {}
+      // On mobile, the bottom-sheet panel covers most of the map, making it
+      // impossible to tap on the visible area. We hide the sheet during the
+      // pick gesture and reopen it once a coordinate has been chosen.
+      const wasMobileSheetOpen = ui.isMobile()
+        && document.getElementById('sheet').classList.contains('visible');
+      if (wasMobileSheetOpen) {
+        document.getElementById('scrim').classList.remove('visible');
+        document.getElementById('sheet').classList.remove('visible');
+      }
+      // Show a top-screen banner so the user knows pick is active and has
+      // a way to cancel without finding the original button.
+      const banner = ensurePickBanner();
+      banner.classList.add('visible');
       const restoreMode = () => {
         try {
           const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
@@ -2658,19 +2853,44 @@
           }
         } catch (_) {}
       };
+      const reopenSheet = () => {
+        if (wasMobileSheetOpen) {
+          // Reopen the sheet on the same panel (coordinates) so the user
+          // sees their newly-filled input.
+          ui.openSheet('coordinates');
+        }
+      };
+      const cleanup = () => {
+        canvas.style.cursor = '';
+        banner.classList.remove('visible');
+        pickLbl.textContent = 'Choisir sur la carte';
+        restoreMode();
+      };
       const onClick = (e) => {
         const { lng, lat } = e.lngLat;
         const c = CRS_BY_ID[fromSel.value];
         const [x, y] = c.id === 'wgs84' ? [lng, lat] : reproject([lng, lat], 'wgs84', c.id);
-        xIn.value = c.isGeographic ? x.toFixed(6) : x.toFixed(2);
-        yIn.value = c.isGeographic ? y.toFixed(6) : y.toFixed(2);
+        // Re-query the input elements because if the panel was reopened,
+        // the previous DOM nodes were destroyed by the panel re-render.
+        // We update via a safe lookup on the visible sheet content.
+        const xUpdated = c.isGeographic ? x.toFixed(6) : x.toFixed(2);
+        const yUpdated = c.isGeographic ? y.toFixed(6) : y.toFixed(2);
+        // Stash on the global so the panel re-init can pick them up.
+        ui._pendingPickResult = { x: xUpdated, y: yUpdated, fromCrs: fromSel.value };
         pickModeOff = null;
-        canvas.style.cursor = '';
-        pickLbl.textContent = 'Choisir sur la carte';
-        restoreMode();
+        cleanup();
+        reopenSheet();
       };
       map.once('click', onClick);
-      pickModeOff = () => { map.off('click', onClick); canvas.style.cursor = ''; restoreMode(); };
+      // Banner cancel handler
+      banner.onclick = () => {
+        if (pickModeOff) { pickModeOff(); pickModeOff = null; }
+      };
+      pickModeOff = () => {
+        map.off('click', onClick);
+        cleanup();
+        reopenSheet();
+      };
     });
 
     root.querySelector('#cc-swap').addEventListener('click', () => {
@@ -2695,7 +2915,13 @@
       const inp = parseInputs();
       if (!inp) { errEl.textContent = 'Coordonnées invalides.'; return; }
       const [lng, lat] = fromSel.value === 'wgs84' ? inp : reproject(inp, fromSel.value, 'wgs84');
-      map.flyTo({ center: [lng, lat], zoom: 15, essential: true });
+      // Use a reasonable zoom that always has imagery available worldwide.
+      // z13 is a city/neighbourhood view (~5km across) — close enough to
+      // identify the location, far enough to work in low-resolution areas
+      // (rural Morocco, deserts) where ESRI doesn't have z18+ tiles.
+      // Also: cap by the map's maxZoom in case the user has overridden it.
+      const targetZoom = Math.min(13, map.getMaxZoom());
+      map.flyTo({ center: [lng, lat], zoom: targetZoom, essential: true });
     });
   }
 
@@ -2850,7 +3076,7 @@
       const dot = document.createElement('div');
       dot.style.cssText = 'width:18px;height:18px;border-radius:50%;background:#3aa0ff;border:3px solid #fff;box-shadow:0 0 0 2px rgba(58,160,255,0.5),0 2px 6px rgba(0,0,0,0.4);cursor:pointer;';
       searchMarker = new maplibregl.Marker({ element: dot }).setLngLat([lng, lat]).addTo(map);
-      map.flyTo({ center: [lng, lat], zoom: 15, essential: true });
+      map.flyTo({ center: [lng, lat], zoom: Math.min(13, map.getMaxZoom()), essential: true });
 
       // Add to history
       searchHistory.unshift({ input: raw, crs: CRS_BY_ID[crsSel.value].label, ts: Date.now() });
