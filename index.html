@@ -684,10 +684,10 @@
     <main id="map-area">
       <div id="map"></div>
 
-      <!-- Basemap switcher -->
-      <div id="basemap-switcher" class="float-card">
-        <button class="basemap-btn" data-basemap="dark">Sombre</button>
-        <button class="basemap-btn" data-basemap="light">Clair</button>
+      <!-- Basemap switcher: only Satellite is exposed. Dark/Light were
+           rarely used and added clutter on the small mobile screen.
+           Power users can still call setBasemap('dark') from the console. -->
+      <div id="basemap-switcher" class="float-card" style="display:none;">
         <button class="basemap-btn active" data-basemap="satellite">Satellite</button>
       </div>
 
@@ -1004,6 +1004,30 @@
   }
   function notifyUi() {
     state.listeners.ui.forEach(fn => fn());
+    // Also push the selection highlight, so when only selectedIds changes
+    // (no feature mutation) the yellow halo updates immediately.
+    try {
+      if (typeof syncSelectionHighlight === 'function') syncSelectionHighlight();
+    } catch (_) {}
+  }
+  // Lightweight wrapper that just refreshes the selection highlight source.
+  // We keep it separate from syncFeaturesToMap so a selection change doesn't
+  // pay the cost of recomputing labels for every feature.
+  function syncSelectionHighlight() {
+    try {
+      if (!map.isStyleLoaded()) return;
+      if (!map.getSource('app-selection')) return;
+      const selFeatures = state.features
+        .filter(f => state.selectedIds.includes(f.id))
+        .map(f => f.geojson);
+      map.getSource('app-selection').setData({
+        type: 'FeatureCollection', features: selFeatures
+      });
+      // Keep the halo above td-* in case a redraw moved it.
+      if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
+      if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
+      if (map.getLayer('app-label')) map.moveLayer('app-label');
+    } catch (_) {}
   }
   function onFeatures(fn) { state.listeners.features.push(fn); }
   function onUi(fn) { state.listeners.ui.push(fn); }
@@ -1028,13 +1052,15 @@
 
   function kindFromGeom(geom, mode) {
     if (mode === 'rectangle') return 'rectangle';
+    if (mode === 'circle') return 'circle';
     if (geom.type === 'Point') return 'point';
     if (geom.type === 'LineString') return 'line';
     return 'polygon';
   }
 
   const KIND_LABEL = {
-    point: 'Point', line: 'Ligne', polygon: 'Polygone', rectangle: 'Rectangle',
+    point: 'Point', line: 'Ligne', polygon: 'Polygone',
+    rectangle: 'Rectangle', circle: 'Cercle',
   };
 
   function computeMetrics(geojson, kind) {
@@ -1042,7 +1068,7 @@
     try {
       if (kind === 'line') {
         m.lengthMeters = turf.length(geojson, { units: 'meters' });
-      } else if (kind === 'polygon' || kind === 'rectangle') {
+      } else if (kind === 'polygon' || kind === 'rectangle' || kind === 'circle') {
         m.areaSquareMeters = turf.area(geojson);
         const ring = geojson.geometry.coordinates[0];
         m.lengthMeters = turf.length(turf.lineString(ring), { units: 'meters' });
@@ -1338,14 +1364,46 @@
       return;
     }
     // Idempotent: already installed?
-    if (map.getSource(SRC_LABELS) && map.getLayer('app-label')) return;
+    if (map.getSource(SRC_LABELS) && map.getLayer('app-label')
+        && map.getSource('app-selection') && map.getLayer('app-selection-line')) return;
 
     // Clean partial state.
     if (map.getLayer('app-label')) { try { map.removeLayer('app-label'); } catch (_) {} }
     if (map.getSource(SRC_LABELS)) { try { map.removeSource(SRC_LABELS); } catch (_) {} }
+    for (const id of ['app-selection-line', 'app-selection-fill', 'app-selection-point']) {
+      if (map.getLayer(id)) { try { map.removeLayer(id); } catch (_) {} }
+    }
+    if (map.getSource('app-selection')) { try { map.removeSource('app-selection'); } catch (_) {} }
 
     const empty = { type: 'FeatureCollection', features: [] };
     map.addSource(SRC_LABELS, { type: 'geojson', data: empty });
+    // Selection highlight source: holds the geometries of every feature in
+    // state.selectedIds. Used so the user can see ALL selected items
+    // simultaneously when in multi-select mode (terra-draw's own select
+    // visual only highlights the one feature being edited).
+    map.addSource('app-selection', { type: 'geojson', data: empty });
+
+    // Selection halo for points (filled circle, larger and brighter).
+    map.addLayer({
+      id: 'app-selection-point', type: 'circle', source: 'app-selection',
+      filter: ['==', ['geometry-type'], 'Point'],
+      paint: {
+        'circle-radius': 12,
+        'circle-color': 'transparent',
+        'circle-stroke-color': '#fbc412',
+        'circle-stroke-width': 3,
+      },
+    });
+    // Selection halo for lines / polygon outlines.
+    map.addLayer({
+      id: 'app-selection-line', type: 'line', source: 'app-selection',
+      filter: ['!=', ['geometry-type'], 'Point'],
+      paint: {
+        'line-color': '#fbc412',
+        'line-width': 4,
+        'line-opacity': 0.85,
+      },
+    });
 
     // We only render LABELS via our own layer. The shapes themselves are
     // rendered by terra-draw (td-point, td-linestring, td-polygon). This
@@ -1418,15 +1476,29 @@
       log.warn('[HydraulicGIS] label setData failed:', err);
     }
 
-    // Critical: re-raise app-label ABOVE all terra-draw layers (td-*) every
-    // time we sync. terra-draw lazily creates td-point / td-linestring /
-    // td-polygon when the user draws, and they get added at the TOP of the
-    // layer stack — covering our label text. We move app-label back to the
-    // top so labels stay visible over polygons and lines.
+    // Sync the selection-highlight layer with state.selectedIds.
     try {
-      if (map.getLayer('app-label')) {
-        map.moveLayer('app-label');  // no beforeId → moves to top
+      const selFeatures = state.features
+        .filter(f => state.selectedIds.includes(f.id))
+        .map(f => f.geojson);
+      if (map.getSource('app-selection')) {
+        map.getSource('app-selection').setData({
+          type: 'FeatureCollection', features: selFeatures
+        });
       }
+    } catch (err) {
+      log.warn('[HydraulicGIS] selection setData failed:', err);
+    }
+
+    // Critical: re-raise app-label and selection layers ABOVE all terra-draw
+    // layers (td-*) every time we sync. terra-draw lazily creates td-point /
+    // td-linestring / td-polygon when the user draws, and they get added at
+    // the TOP of the layer stack — covering our overlays.
+    try {
+      // Order matters: selection halo first (under), then label (above).
+      if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
+      if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
+      if (map.getLayer('app-label')) map.moveLayer('app-label');
     } catch (_) {}
 
     // Sync visibility from our store to terra-draw's render layers.
@@ -1559,7 +1631,11 @@
       //    feature via Select → Delete-selection (per user feedback).
       const controlOpts = {
         modes: ['point', 'linestring', 'polygon', 'rectangle', 'circle', 'select', 'delete-selection'],
-        open: true,
+        // Start COLLAPSED: only the pencil "open" button is visible.
+        // Tapping it expands the full draw toolbar. This gives us the
+        // single-button dropdown the user requested without us having to
+        // build a custom dropdown — terra-draw already supports it.
+        open: false,
       };
       if (modeOptions) controlOpts.modeOptions = modeOptions;
 
@@ -1581,40 +1657,94 @@
             if (document.getElementById('hgis-multi-select-btn')) return;
             const deleteBtn = document.querySelector('.maplibregl-terradraw-delete-selection-button');
             if (!deleteBtn || !deleteBtn.parentNode) return;
-            const btn = document.createElement('button');
-            btn.id = 'hgis-multi-select-btn';
-            btn.type = 'button';
-            btn.title = 'Sélection multiple';
-            btn.setAttribute('aria-label', 'Activer la sélection multiple');
-            // Match the styling of other terra-draw buttons. We embed the
-            // SVG inline since the existing buttons use background-image
-            // CSS classes, but a custom SVG with two checkboxes reads more
-            // clearly than re-using one of their generic icons.
-            btn.innerHTML = `
+
+            // ── Multi-select toggle button
+            const multiBtn = document.createElement('button');
+            multiBtn.id = 'hgis-multi-select-btn';
+            multiBtn.type = 'button';
+            multiBtn.title = 'Sélection multiple';
+            multiBtn.setAttribute('aria-label', 'Activer la sélection multiple');
+            multiBtn.innerHTML = `
               <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#5f6368" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
                 <rect x="3" y="3" width="8" height="8" rx="1"/>
                 <polyline points="5,7 7,9 9,5" stroke-width="2.4"/>
                 <rect x="13" y="13" width="8" height="8" rx="1"/>
                 <polyline points="15,17 17,19 19,15" stroke-width="2.4"/>
               </svg>`;
-            // Reuse the CSS that already styles all .maplibregl-terradraw-*
-            // buttons (40x40, hover, active states).
-            btn.className = 'maplibregl-terradraw-add-control';
-            btn.style.cssText = 'background-image:none; background-color:transparent;';
-            btn.addEventListener('click', () => {
+            multiBtn.className = 'maplibregl-terradraw-add-control';
+            multiBtn.style.cssText = 'background-image:none; background-color:transparent;';
+            multiBtn.addEventListener('click', () => {
               state.multiSelectMode = !state.multiSelectMode;
-              btn.classList.toggle('active', state.multiSelectMode);
-              if (!state.multiSelectMode) {
-                // Leaving multi-select: keep current selection but stop adding.
-                log.info('[HydraulicGIS] multi-select OFF (kept ' + state.selectedIds.length + ' selected)');
-              } else {
-                log.info('[HydraulicGIS] multi-select ON');
-              }
+              multiBtn.classList.toggle('active', state.multiSelectMode);
+              if (!state.multiSelectMode) log.info('[HydraulicGIS] multi-select OFF');
+              else log.info('[HydraulicGIS] multi-select ON');
               notifyUi();
             });
-            // Insert BEFORE delete-selection so order is: ... Select, Multi, Delete-selection
-            deleteBtn.parentNode.insertBefore(btn, deleteBtn);
-            log.info('[HydraulicGIS] multi-select button installed.');
+            deleteBtn.parentNode.insertBefore(multiBtn, deleteBtn);
+
+            // ── Edit button (between multi-select and delete)
+            // Reason: when terra-draw's Select mode highlights a feature, it
+            // ALSO immediately enters edit mode (showing vertices, draggable
+            // mid-points). With multi-select that means only the FIRST tapped
+            // feature shows vertices and the rest look unhighlighted. By
+            // separating "select" from "edit" we let the user multi-select
+            // freely (no vertices shown) and explicitly tap Edit when they
+            // want to drag vertices on a single feature.
+            const editBtn = document.createElement('button');
+            editBtn.id = 'hgis-edit-btn';
+            editBtn.type = 'button';
+            editBtn.title = 'Éditer (déplacer les sommets)';
+            editBtn.setAttribute('aria-label', 'Éditer la sélection');
+            editBtn.innerHTML = `
+              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#5f6368" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
+                <path d="M12 20h9"/>
+                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
+              </svg>`;
+            editBtn.className = 'maplibregl-terradraw-add-control';
+            editBtn.style.cssText = 'background-image:none; background-color:transparent;';
+            editBtn.addEventListener('click', () => {
+              try {
+                const td2 = drawControl.getTerraDrawInstance();
+                if (!td2) return;
+                // Toggle: if already in select mode, leave it (back to static)
+                if (td2.getMode() === 'select') {
+                  td2.setMode('static');
+                  editBtn.classList.remove('active');
+                  log.info('[HydraulicGIS] edit mode OFF');
+                  return;
+                }
+                if (state.selectedIds.length === 0) {
+                  ui.confirm('Aucune sélection',
+                    "Sélectionnez d'abord un objet sur la carte ou dans Calques, puis touchez Éditer.",
+                    () => {});
+                  return;
+                }
+                // Edit only the FIRST selected feature (terra-draw's select
+                // mode is single-select internally — vertices for one shape).
+                const firstId = state.selectedIds[0];
+                const ours = state.features.find(f => f.id === firstId);
+                if (!ours || !ours.geojson || !ours.geojson.properties || !ours.geojson.properties._terraId) {
+                  log.warn('[HydraulicGIS] cannot enter edit mode: feature has no terraId');
+                  return;
+                }
+                const terraId = ours.geojson.properties._terraId;
+                td2.setMode('select');
+                // selectFeature must be called AFTER setMode('select').
+                if (typeof td2.selectFeature === 'function') {
+                  try { td2.selectFeature(terraId); }
+                  catch (e) { log.warn('[HydraulicGIS] selectFeature failed:', e); }
+                }
+                editBtn.classList.add('active');
+                if (state.selectedIds.length > 1) {
+                  log.info('[HydraulicGIS] edit mode ON for', firstId, '(other selected items are highlighted but not editable)');
+                } else {
+                  log.info('[HydraulicGIS] edit mode ON for', firstId);
+                }
+              } catch (err) { log.warn('[HydraulicGIS] edit toggle failed:', err); }
+            });
+            deleteBtn.parentNode.insertBefore(editBtn, deleteBtn);
+
+            log.info('[HydraulicGIS] multi-select + edit buttons installed.');
           }, delay);
         }
       }
@@ -2408,6 +2538,7 @@
     layers: 'Calques',
     style: 'Style',
     measure: 'Mesures',
+    tools: 'Outils géométriques',
     coordinates: 'Coordonnées',
     search: 'Aller à un point',
     elevation: 'Profil d\'élévation',
@@ -2423,6 +2554,7 @@
     else if (panelId === 'layers') el.innerHTML = renderLayers();
     else if (panelId === 'style') el.innerHTML = renderStyle();
     else if (panelId === 'measure') el.innerHTML = renderMeasure();
+    else if (panelId === 'tools') el.innerHTML = renderTools();
     else if (panelId === 'coordinates') el.innerHTML = renderCoordinates();
     else if (panelId === 'search') el.innerHTML = renderSearch();
     else if (panelId === 'elevation') el.innerHTML = renderElevation();
@@ -2436,6 +2568,7 @@
     if (panelId === 'style') attachStyleEvents(el);
     if (panelId === 'layers') attachLayersEvents(el);
     if (panelId === 'files') attachFilesEvents(el);
+    if (panelId === 'tools') attachToolsEvents(el);
   }
 
   /* ═══ 7. PANEL CONTENT — MENU (mobile) ══════════════════════════════════════ */
@@ -2444,6 +2577,7 @@
       { id: 'layers', label: 'Calques', icon: 'M12 3l9 5-9 5-9-5 9-5z M3 13l9 5 9-5 M3 17l9 5 9-5' },
       { id: 'style', label: 'Style', icon: 'M12 3a9 9 0 109 9c0-1.5-1-2.5-2.5-2.5H17c-1.5 0-2.5-1-2.5-2.5S15.5 4.5 14 4.5h-2z' },
       { id: 'measure', label: 'Mesures', icon: 'M16 4l4 4L8 20l-4-4L16 4z' },
+      { id: 'tools', label: 'Outils géométriques', icon: 'M14.7 6.3a4 4 0 015.66 5.66L10 22.36l-7.07 1.41 1.41-7.07L14.7 6.3z' },
       { id: 'coordinates', label: 'Coordonnées', icon: 'M12 2C7 2 4 5.5 4 10c0 5.5 8 12 8 12s8-6.5 8-12c0-4.5-3-8-8-8z' },
       { id: 'search', label: 'Aller à un point', icon: 'M11 4a7 7 0 100 14 7 7 0 000-14z M16 16l5 5' },
       { id: 'elevation', label: 'Profil d\'élévation', icon: 'M3 18l5-9 4 5 4-7 5 11H3z' },
@@ -2674,6 +2808,382 @@
     return items + total;
   }
 
+  /* ═══ 10b. PANEL CONTENT — TOOLS (buffer, intersection) ═════════════════════ */
+  function renderTools() {
+    const sel = state.features.filter(f => state.selectedIds.includes(f.id));
+    const polys = sel.filter(f => ['polygon', 'rectangle', 'circle'].includes(f.kind));
+    return `
+      <div class="stack">
+        <!-- ─── Buffer tool ──────────────────────────────────────────── -->
+        <div class="surface">
+          <div class="field-label" style="margin-bottom:6px;">Buffer (zone tampon)</div>
+          <p style="font-size:12px; color:var(--ink-1); margin:0 0 10px;">
+            Crée un nouvel objet polygonal à une distance donnée autour d'un objet sélectionné.
+            ${sel.length === 0 ? '<br><strong>Sélectionnez un objet pour commencer.</strong>' : ''}
+            ${sel.length > 1 ? '<br><strong>Sélectionnez un seul objet à la fois.</strong>' : ''}
+          </p>
+          <div style="display:flex; gap:8px; align-items:flex-end;">
+            <div style="flex:1;">
+              <label class="field-label" style="font-size:11px;">Rayon (mètres)</label>
+              <input type="text" id="bf-radius" class="field" inputmode="decimal" autocapitalize="off" autocorrect="off"
+                     value="50" style="font-family:'JetBrains Mono',ui-monospace,monospace;" />
+            </div>
+            <button class="btn btn-solid" id="bf-apply" ${sel.length !== 1 ? 'disabled' : ''}
+                    style="white-space:nowrap;">Appliquer</button>
+          </div>
+        </div>
+
+        <!-- ─── Intersection tool ──────────────────────────────────── -->
+        <div class="surface">
+          <div class="field-label" style="margin-bottom:6px;">Intersection de polygones</div>
+          <p style="font-size:12px; color:var(--ink-1); margin:0 0 10px;">
+            Calcule la zone commune (chevauchement) entre 2 polygones sélectionnés et la crée comme nouvel objet.
+            ${polys.length === 0 ? "<br><strong>Sélectionnez au moins 2 polygones avec « Sélection multiple ».</strong>"
+              : polys.length === 1 ? "<br><strong>Encore 1 polygone à sélectionner.</strong>"
+              : `<br><strong>${polys.length} polygones sélectionnés.</strong>`}
+          </p>
+          <button class="btn btn-solid" id="it-apply" ${polys.length < 2 ? 'disabled' : ''}
+                  style="width:100%;">Calculer l'intersection</button>
+          <div id="it-result" style="font-size:12px; margin-top:8px;"></div>
+        </div>
+
+        <!-- ─── Contour lines tool ──────────────────────────────────── -->
+        <div class="surface">
+          <div class="field-label" style="margin-bottom:6px;">Courbes de niveau</div>
+          <p style="font-size:12px; color:var(--ink-1); margin:0 0 10px;">
+            Échantillonne l'altitude (Open-Elevation) sur le polygone sélectionné et trace les courbes de niveau.
+            <br><em style="color:var(--ink-2);">Nécessite Internet. Ne pas utiliser sur des polygones très étendus (limite ~30 km de côté).</em>
+            ${polys.length === 1 ? '' : '<br><strong>Sélectionnez exactement 1 polygone, rectangle ou cercle.</strong>'}
+          </p>
+          <div style="display:flex; gap:8px; align-items:flex-end;">
+            <div style="flex:1;">
+              <label class="field-label" style="font-size:11px;">Pas (mètres)</label>
+              <input type="text" id="cn-step" class="field" inputmode="decimal" autocapitalize="off" autocorrect="off"
+                     value="10" style="font-family:'JetBrains Mono',ui-monospace,monospace;" />
+            </div>
+            <button class="btn btn-solid" id="cn-apply" ${polys.length !== 1 ? 'disabled' : ''}
+                    style="white-space:nowrap;">Tracer</button>
+          </div>
+          <div id="cn-result" style="font-size:12px; margin-top:8px;"></div>
+        </div>
+      </div>
+    `;
+  }
+
+  function attachToolsEvents(root) {
+    // Buffer
+    const bfBtn = root.querySelector('#bf-apply');
+    if (bfBtn) bfBtn.addEventListener('click', () => {
+      const sel = state.features.filter(f => state.selectedIds.includes(f.id));
+      if (sel.length !== 1) return;
+      const src = sel[0];
+      const rIn = root.querySelector('#bf-radius');
+      const r = parseFloat(String(rIn.value).replace(',', '.'));
+      if (isNaN(r) || r === 0) {
+        ui.confirm('Rayon invalide', 'Entrez un nombre non nul (ex. 50). Un rayon négatif rétrécit le polygone.', () => {});
+        return;
+      }
+      try {
+        const buffered = turf.buffer(src.geojson, r, { units: 'meters' });
+        if (!buffered || !buffered.geometry) {
+          ui.confirm('Buffer impossible', "L'opération n'a produit aucune géométrie (rayon trop petit ou trop négatif).", () => {});
+          return;
+        }
+        const newF = addFeature({
+          type: 'Feature',
+          geometry: buffered.geometry,
+          properties: {}
+        }, 'polygon', { name: `Buffer ${r}m de ${src.name}` });
+        // Push to terra-draw so it gets rendered like a regular feature.
+        try {
+          const td2 = drawControl.getTerraDrawInstance();
+          if (td2 && typeof td2.addFeatures === 'function') {
+            const added = td2.addFeatures([{
+              type: 'Feature',
+              geometry: buffered.geometry,
+              properties: { mode: 'polygon' }
+            }]);
+            if (added && added.length > 0) {
+              newF.geojson.properties._terraId = added[0];
+            }
+          }
+        } catch (e) { log.warn('[HydraulicGIS] terra-draw addFeatures (buffer) failed:', e); }
+        notifyFeatures();
+        log.info('[HydraulicGIS] buffer created:', newF.id, 'r=' + r + 'm');
+      } catch (err) {
+        log.error('[HydraulicGIS] buffer failed:', err);
+        ui.confirm('Erreur', "Le calcul du buffer a échoué : " + (err.message || err), () => {});
+      }
+    });
+
+    // Intersection
+    const itBtn = root.querySelector('#it-apply');
+    if (itBtn) itBtn.addEventListener('click', () => {
+      const polys = state.features
+        .filter(f => state.selectedIds.includes(f.id))
+        .filter(f => ['polygon', 'rectangle', 'circle'].includes(f.kind));
+      if (polys.length < 2) return;
+      try {
+        // Reduce: start with the first polygon and intersect with each next.
+        let acc = polys[0].geojson;
+        for (let i = 1; i < polys.length; i++) {
+          const next = turf.intersect(acc, polys[i].geojson);
+          if (!next) {
+            const result = root.querySelector('#it-result');
+            if (result) {
+              result.style.color = 'var(--danger)';
+              result.textContent = `Aucun chevauchement entre ${polys[0].name} et ${polys[i].name}.`;
+            }
+            return;
+          }
+          acc = next;
+        }
+        const newF = addFeature({
+          type: 'Feature',
+          geometry: acc.geometry,
+          properties: {}
+        }, 'polygon', { name: `Intersection (${polys.map(p => p.name).join(' ∩ ')})` });
+        try {
+          const td2 = drawControl.getTerraDrawInstance();
+          if (td2 && typeof td2.addFeatures === 'function') {
+            const added = td2.addFeatures([{
+              type: 'Feature',
+              geometry: acc.geometry,
+              properties: { mode: 'polygon' }
+            }]);
+            if (added && added.length > 0) {
+              newF.geojson.properties._terraId = added[0];
+            }
+          }
+        } catch (e) { log.warn('[HydraulicGIS] terra-draw addFeatures (intersect) failed:', e); }
+        notifyFeatures();
+        const result = root.querySelector('#it-result');
+        if (result) {
+          result.style.color = 'var(--brand)';
+          const areaM2 = turf.area(newF.geojson);
+          result.textContent = `✓ Intersection créée. Surface : ${formatArea(areaM2)}`;
+        }
+        log.info('[HydraulicGIS] intersection created:', newF.id);
+      } catch (err) {
+        log.error('[HydraulicGIS] intersection failed:', err);
+        const result = root.querySelector('#it-result');
+        if (result) {
+          result.style.color = 'var(--danger)';
+          result.textContent = "Erreur : " + (err.message || err);
+        }
+      }
+    });
+
+    // Contour lines: sample elevations on a grid inside the bbox of the
+    // selected polygon, then run a basic marching-squares to build polylines
+    // at integer multiples of the user-given step. Network access required.
+    const cnBtn = root.querySelector('#cn-apply');
+    if (cnBtn) cnBtn.addEventListener('click', async () => {
+      const sel = state.features.filter(f => state.selectedIds.includes(f.id));
+      const polysOnly = sel.filter(f => ['polygon', 'rectangle', 'circle'].includes(f.kind));
+      if (polysOnly.length !== 1) return;
+      const poly = polysOnly[0];
+      const stepIn = root.querySelector('#cn-step');
+      const step = parseFloat(String(stepIn.value).replace(',', '.'));
+      const result = root.querySelector('#cn-result');
+      if (isNaN(step) || step <= 0) {
+        if (result) {
+          result.style.color = 'var(--danger)';
+          result.textContent = "Pas invalide. Entrez un nombre positif (ex. 10).";
+        }
+        return;
+      }
+
+      // Prevent abuse: bbox max ~30 km × 30 km. Open-Elevation rate-limits
+      // bursts; a denser grid here would also slow the marching-squares.
+      const bbox = turf.bbox(poly.geojson);  // [minX, minY, maxX, maxY]
+      const widthKm = turf.distance([bbox[0], bbox[1]], [bbox[2], bbox[1]], { units: 'kilometers' });
+      const heightKm = turf.distance([bbox[0], bbox[1]], [bbox[0], bbox[3]], { units: 'kilometers' });
+      if (widthKm > 30 || heightKm > 30) {
+        if (result) {
+          result.style.color = 'var(--danger)';
+          result.textContent = `Polygone trop étendu (${widthKm.toFixed(1)} × ${heightKm.toFixed(1)} km). Limite 30 km.`;
+        }
+        return;
+      }
+
+      // Grid resolution: 25×25 = 625 sample points. Open-Elevation accepts
+      // up to a few hundred per request; we batch into one POST.
+      const N = 25;
+      const gridLngs = new Array(N).fill(0).map((_, i) => bbox[0] + (i / (N - 1)) * (bbox[2] - bbox[0]));
+      const gridLats = new Array(N).fill(0).map((_, j) => bbox[1] + (j / (N - 1)) * (bbox[3] - bbox[1]));
+
+      cnBtn.disabled = true;
+      const origLabel = cnBtn.textContent;
+      cnBtn.textContent = 'Échantillonnage…';
+      if (result) { result.style.color = 'var(--ink-2)'; result.textContent = 'Requête vers Open-Elevation…'; }
+
+      try {
+        const locations = [];
+        for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+          locations.push({ latitude: gridLats[j], longitude: gridLngs[i] });
+        }
+        // Open-Elevation public endpoint, free, CORS-enabled.
+        const resp = await fetch('https://api.open-elevation.com/api/v1/lookup', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ locations }),
+        });
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const data = await resp.json();
+        if (!data.results || data.results.length !== N * N) {
+          throw new Error('Réponse incomplète');
+        }
+        // Build the elevation grid Z[j][i].
+        const Z = [];
+        for (let j = 0; j < N; j++) {
+          Z.push(new Array(N));
+          for (let i = 0; i < N; i++) {
+            Z[j][i] = data.results[j * N + i].elevation;
+          }
+        }
+        let minZ = Infinity, maxZ = -Infinity;
+        for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+          if (Z[j][i] < minZ) minZ = Z[j][i];
+          if (Z[j][i] > maxZ) maxZ = Z[j][i];
+        }
+
+        // Generate contour levels from floor(min/step)*step to ceil(max/step)*step.
+        const firstLevel = Math.ceil(minZ / step) * step;
+        const lastLevel  = Math.floor(maxZ / step) * step;
+        const levels = [];
+        for (let v = firstLevel; v <= lastLevel; v += step) levels.push(v);
+
+        // Marching squares — one segment per cell-edge crossing.
+        // For each level we collect lineStrings (we don't bother chaining
+        // them — the user just sees segments rendered as polylines, which
+        // visually merge into closed curves at this resolution).
+        const interp = (x1, x2, z1, z2, level) => (level - z1) / (z2 - z1);
+        const allFeatures = [];
+        for (const L of levels) {
+          const segments = [];
+          for (let j = 0; j < N - 1; j++) {
+            for (let i = 0; i < N - 1; i++) {
+              const z00 = Z[j][i], z10 = Z[j][i+1], z11 = Z[j+1][i+1], z01 = Z[j+1][i];
+              const lng0 = gridLngs[i], lng1 = gridLngs[i+1];
+              const lat0 = gridLats[j], lat1 = gridLats[j+1];
+              const c00 = z00 >= L ? 1 : 0;
+              const c10 = z10 >= L ? 1 : 0;
+              const c11 = z11 >= L ? 1 : 0;
+              const c01 = z01 >= L ? 1 : 0;
+              const idx = (c00 << 0) | (c10 << 1) | (c11 << 2) | (c01 << 3);
+              if (idx === 0 || idx === 15) continue;
+              // Edge midpoints (interpolated): bottom=lat0, right=lng1, top=lat1, left=lng0
+              const mB = () => [lng0 + interp(lng0, lng1, z00, z10, L) * (lng1 - lng0), lat0];
+              const mR = () => [lng1, lat0 + interp(lat0, lat1, z10, z11, L) * (lat1 - lat0)];
+              const mT = () => [lng0 + interp(lng0, lng1, z01, z11, L) * (lng1 - lng0), lat1];
+              const mL = () => [lng0, lat0 + interp(lat0, lat1, z00, z01, L) * (lat1 - lat0)];
+              // Each case lists the segments to draw as PAIRS of edge
+              // midpoints. Simple cases produce 1 segment (one inner-pair).
+              // Saddle cases (5 and 10) produce 2 segments.
+              let pairs;
+              switch (idx) {
+                case 1: case 14: pairs = [[mL, mB]]; break;
+                case 2: case 13: pairs = [[mB, mR]]; break;
+                case 3: case 12: pairs = [[mL, mR]]; break;
+                case 4: case 11: pairs = [[mR, mT]]; break;
+                case 6: case 9:  pairs = [[mB, mT]]; break;
+                case 7: case 8:  pairs = [[mL, mT]]; break;
+                case 5:  pairs = [[mL, mT], [mB, mR]]; break;
+                case 10: pairs = [[mL, mB], [mR, mT]]; break;
+                default: continue;
+              }
+              for (const [fA, fB] of pairs) {
+                segments.push([fA(), fB()]);
+              }
+            }
+          }
+          // Push every segment as a tiny LineString. Visually they connect.
+          if (segments.length > 0) {
+            allFeatures.push({
+              type: 'Feature',
+              geometry: { type: 'MultiLineString', coordinates: segments },
+              properties: { level: L },
+            });
+          }
+        }
+
+        if (allFeatures.length === 0) {
+          if (result) {
+            result.style.color = 'var(--ink-2)';
+            result.textContent = `Aucune courbe générée. Pas trop grand pour cette zone (Δ alt = ${(maxZ-minZ).toFixed(1)} m).`;
+          }
+          return;
+        }
+
+        // Add as a single feature (MultiLineString of all levels merged).
+        // We name it explicitly and skip the rename prompt.
+        const merged = { type: 'MultiLineString', coordinates: [] };
+        for (const f of allFeatures) merged.coordinates.push(...f.geometry.coordinates);
+        const newF = addFeature({
+          type: 'Feature', geometry: merged, properties: {}
+        }, 'line', { name: `Courbes ${step}m de ${poly.name}` });
+        try {
+          const td2 = drawControl.getTerraDrawInstance();
+          if (td2 && typeof td2.addFeatures === 'function') {
+            // terra-draw doesn't accept MultiLineString — split into individual
+            // LineStrings. To keep it manageable we add a single sample line
+            // and rely on our own renderer if needed. For now, push the merged
+            // feature into the store and let our app-* layer handle it later.
+            // (Skip terra-draw for contours — they're a thousand line segments.)
+          }
+        } catch (_) {}
+        // Also add a dedicated layer to render the contours, since terra-draw
+        // doesn't render MultiLineString.
+        ensureContourLayer();
+        const contourSrc = map.getSource('app-contours');
+        if (contourSrc) {
+          const cur = contourSrc._data || { type: 'FeatureCollection', features: [] };
+          contourSrc.setData({
+            type: 'FeatureCollection',
+            features: [...(cur.features || []), { type: 'Feature', geometry: merged, properties: { id: newF.id } }],
+          });
+        }
+        notifyFeatures();
+        if (result) {
+          result.style.color = 'var(--brand)';
+          result.textContent = `✓ ${levels.length} niveaux tracés (alt ${minZ.toFixed(0)} → ${maxZ.toFixed(0)} m).`;
+        }
+        log.info('[HydraulicGIS] contour lines created:', newF.id, 'levels=' + levels.length);
+      } catch (err) {
+        log.error('[HydraulicGIS] contour lines failed:', err);
+        if (result) {
+          result.style.color = 'var(--danger)';
+          result.textContent = "Erreur : " + (err.message || err) + " (Open-Elevation peut être hors-ligne)";
+        }
+      } finally {
+        cnBtn.disabled = false;
+        cnBtn.textContent = origLabel;
+      }
+    });
+  }
+
+  // Lazy-create the contour rendering layer. Contours go in their own
+  // layer so they're styled independently and can be cleared without
+  // touching the main feature layers.
+  function ensureContourLayer() {
+    try {
+      if (!map.getSource('app-contours')) {
+        map.addSource('app-contours', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+      }
+      if (!map.getLayer('app-contours-line')) {
+        map.addLayer({
+          id: 'app-contours-line', type: 'line', source: 'app-contours',
+          paint: {
+            'line-color': '#ffd166',
+            'line-width': 1.2,
+            'line-opacity': 0.85,
+          },
+        });
+      }
+    } catch (_) {}
+  }
+
   /* ═══ 11. PANEL CONTENT — COORDINATES ═══════════════════════════════════════ */
   let pickModeOff = null;
   // coordHistory hoisted at script top.
@@ -2695,11 +3205,11 @@
         <div class="stack-tight">
           <label>
             <span class="field-label" id="cc-x-lbl">Longitude</span>
-            <input type="text" id="cc-x" class="field" inputmode="decimal" placeholder="ex. -5.123456" style="font-family:'JetBrains Mono',ui-monospace,monospace;" />
+            <input type="text" id="cc-x" class="field" inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="ex. -5.123456" style="font-family:'JetBrains Mono',ui-monospace,monospace;" />
           </label>
           <label>
             <span class="field-label" id="cc-y-lbl">Latitude</span>
-            <input type="text" id="cc-y" class="field" inputmode="decimal" placeholder="ex. 33.987654" style="font-family:'JetBrains Mono',ui-monospace,monospace;" />
+            <input type="text" id="cc-y" class="field" inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false" placeholder="ex. 33.987654" style="font-family:'JetBrains Mono',ui-monospace,monospace;" />
           </label>
           <button class="btn btn-subtle" id="cc-pick" style="width:100%;">
             <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 2v4M12 18v4M2 12h4M18 12h4" stroke="currentColor" stroke-width="2" stroke-linecap="round"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>
@@ -2907,8 +3417,50 @@
       const out = reproject(inp, fromSel.value, toSel.value);
       coordHistory.unshift({ from: fromSel.value, to: toSel.value, in: inp, out, ts: Date.now() });
       coordHistory = coordHistory.slice(0, 20);
-      ui.render();
+      // CRITICAL: do NOT call ui.render() here — it re-renders the whole
+      // panel, which DESTROYS the cc-x and cc-y input DOM nodes and
+      // RECREATES them empty. That was the cause of "Aller à" failing
+      // after a successful convert: the inputs looked the same to the user
+      // but were actually empty <input> elements with no value.
+      // Instead, surgically refresh just the history section.
+      refreshHistory();
     });
+
+    // Re-render only the history block (without rebuilding the input fields).
+    // Also wires click handlers so tapping a history row flies to that point.
+    function refreshHistory() {
+      let histWrap = root.querySelector('#cc-history');
+      if (!histWrap) {
+        // The history wrapper didn't exist (first conversion of the session).
+        // We need to create the surrounding label/wrapper. Easiest: append.
+        const errBlock = root.querySelector('#cc-error');
+        const block = document.createElement('div');
+        block.innerHTML = `<label class="field-label">Historique</label>
+                           <div id="cc-history"></div>`;
+        errBlock.parentNode.insertBefore(block, errBlock.nextSibling);
+        histWrap = root.querySelector('#cc-history');
+      }
+      histWrap.innerHTML = coordHistory.map(renderHist).join('');
+      // Make each row clickable: tap → fly to the converted point. We use
+      // the WGS84 form for fly-to. If neither side is WGS84 we project the
+      // input through it (Lambert is in metres, not lng/lat).
+      histWrap.querySelectorAll('.hist-item').forEach((el, i) => {
+        el.style.cursor = 'pointer';
+        el.title = 'Touchez pour aller à ce point';
+        el.addEventListener('click', () => {
+          const h = coordHistory[i];
+          if (!h) return;
+          let lng, lat;
+          if (h.from === 'wgs84') { [lng, lat] = h.in; }
+          else if (h.to === 'wgs84') { [lng, lat] = h.out; }
+          else { [lng, lat] = reproject(h.in, h.from, 'wgs84'); }
+          map.flyTo({ center: [lng, lat], zoom: Math.min(13, map.getMaxZoom()), essential: true });
+        });
+      });
+    }
+    // Wire history rows that were rendered server-side (i.e. on initial
+    // render of an already-populated history).
+    refreshHistory();
 
     root.querySelector('#cc-fly').addEventListener('click', () => {
       errEl.textContent = '';
@@ -2994,7 +3546,7 @@
 
         <div>
           <label class="field-label" id="sr-x-lbl">Longitude (ou X, Y séparés par une virgule)</label>
-          <input type="text" id="sr-input" class="field" inputmode="decimal"
+          <input type="text" id="sr-input" class="field" inputmode="text" autocapitalize="off" autocorrect="off" spellcheck="false"
                  placeholder="ex. -8.0083, 31.6295 ou 31.6295 -8.0083"
                  style="font-family:'JetBrains Mono',ui-monospace,monospace;" />
         </div>
