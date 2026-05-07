@@ -1133,7 +1133,7 @@
   /* ═══ 4. FEATURE OPERATIONS ═════════════════════════════════════════════════ */
   const DEFAULT_STYLE = {
     stroke: '#3aa0ff', strokeWidth: 2.5,
-    fill: '#3aa0ff', fillOpacity: 0.18,
+    fill: '#3aa0ff', fillOpacity: 0.30,
     visible: true, showLabel: true,
   };
 
@@ -1234,8 +1234,20 @@
         }
       } catch (err) { log.warn('[HydraulicGIS] removeFeatures failed:', err); }
     }
-    state.features = state.features.filter(f => f.id !== id);
+    state.features = state.features.filter(f2 => f2.id !== id);
     state.selectedIds = state.selectedIds.filter(x => x !== id);
+    // If this was a contour feature, clear its elevation labels too. We
+    // don't have a back-link from labels to the parent feature, so we
+    // re-emit only the labels that belong to STILL-EXISTING contour
+    // features. Practically: if no contour features remain, wipe all.
+    try {
+      const stillHasContours = state.features.some(f2 =>
+        f2.geojson && f2.geojson.properties && f2.geojson.properties._derivedKind === 'contours');
+      const labSrc = map.getSource('app-contour-labels');
+      if (labSrc && !stillHasContours) {
+        labSrc.setData({ type: 'FeatureCollection', features: [] });
+      }
+    } catch (_) {}
     notifyFeatures();
     notifyUi();
   }
@@ -1453,7 +1465,14 @@
     } catch (err) { log.error('[HydraulicGIS] restore failed:', err); }
   }, false);
 
-  map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+  // Navigation control: per user spec, replace the +/- zoom buttons with
+  // just a compass that lets the user reset the bearing to north (the map
+  // is rotatable on touch with two fingers). Pinch-zoom and wheel still work.
+  map.addControl(new maplibregl.NavigationControl({
+    showZoom: false,
+    showCompass: true,
+    visualizePitch: true,
+  }), 'top-right');
   map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
   map.addControl(new maplibregl.GeolocateControl({
     positionOptions: { enableHighAccuracy: true },
@@ -1537,20 +1556,26 @@
       layout: {
         'text-field': ['get', 'name'],
         'text-font': ['Noto Sans Regular'],
-        'text-size': 13,
-        'text-offset': [0, 1.4],
+        'text-size': 12,
+        // Minimal offset: pinned to the geometry centroid (or vertex for points)
+        'text-offset': [0, 0.6],
         'text-anchor': 'top',
-        // Allow overlap is critical: when a polygon fill covers the centroid,
-        // and a basemap road label is nearby, our user-name labels were being
-        // skipped by the placement engine. We force-show them.
-        'text-allow-overlap': true,
-        'text-ignore-placement': true,
+        // Per user spec: bigger features get priority. We push the
+        // priority value into properties.priority on each label and use
+        // it via `symbol-sort-key` (higher = drawn later = on top).
+        'symbol-sort-key': ['coalesce', ['get', 'priority'], 0],
+        // Allow overlap on the SAME geometry but use a small padding so
+        // adjacent labels don't smash into each other. The placement
+        // engine then enforces the priority-based ordering above.
+        'text-allow-overlap': false,
+        'text-ignore-placement': false,
+        'text-padding': 4,
       },
       paint: {
         'text-color': '#f6f8fb',
         'text-halo-color': '#0b0f14',
-        'text-halo-width': 2,
-        'text-halo-blur': 0.5,
+        'text-halo-width': 1.6,
+        'text-halo-blur': 0.4,
       },
     });
   }
@@ -1572,21 +1597,49 @@
     }
 
     // Build labels for features (terra-draw doesn't render names).
+    // Per user spec, bigger features get higher priority so when labels
+    // overlap, the larger feature's label wins. We compute priority from
+    // the feature's metric: log of length (lines) or sqrt of area (polys).
     const labels = [];
     for (const f of state.features) {
       if (!f.style || !f.style.visible) continue;
       if (!f.style.showLabel) continue;
-      const props = { id: f.id, name: f.name };
+      // Priority: 0 (low) → 100 (high). We use metric magnitude so a 1km
+      // line wins over a 10m line, and a 1ha polygon wins over a 1m² one.
+      let priority = 0;
+      if (f.metrics && f.metrics.lengthMeters) {
+        priority = Math.round(Math.log10(Math.max(1, f.metrics.lengthMeters)) * 20);
+      } else if (f.metrics && f.metrics.areaSquareMeters) {
+        priority = Math.round(Math.log10(Math.max(1, f.metrics.areaSquareMeters)) * 15);
+      }
+      const props = { id: f.id, name: f.name, priority };
       if (f.kind === 'point') {
         labels.push({ type: 'Feature', geometry: f.geojson.geometry, properties: props });
       } else if (f.kind === 'line') {
+        // For lines, place the label at the midpoint regardless of length —
+        // even short lines should have a visible label. We also handle the
+        // edge case where turf.along fails (e.g. degenerate 0-length line).
         try {
           const totalKm = turf.length(f.geojson, { units: 'kilometers' });
-          if (totalKm > 0) {
+          let labelPt = null;
+          if (totalKm > 1e-6) {
             const mid = turf.along(f.geojson, totalKm / 2, { units: 'kilometers' });
-            labels.push({ type: 'Feature', geometry: mid.geometry, properties: props });
+            labelPt = mid && mid.geometry;
           }
-        } catch (_) {}
+          // Fallback: take the geometric midpoint of the coordinate list
+          if (!labelPt) {
+            const coords = f.geojson.geometry.coordinates;
+            if (coords && coords.length > 0) {
+              const midIdx = Math.floor(coords.length / 2);
+              labelPt = { type: 'Point', coordinates: coords[midIdx] };
+            }
+          }
+          if (labelPt) {
+            labels.push({ type: 'Feature', geometry: labelPt, properties: props });
+          }
+        } catch (e) {
+          log.warn('[HydraulicGIS] line label failed for', f.id, e);
+        }
       } else {
         const c = polyCentroid(f);
         if (c) labels.push({ type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: props });
@@ -1967,7 +2020,45 @@
             });
             deleteBtn.parentNode.insertBefore(editBtn, deleteBtn);
 
-            log.info('[HydraulicGIS] multi-select + edit buttons installed.');
+            // ── Hide the terra-draw "Select" button (the lightning-bolt
+            // icon next to the polygon button). Per user spec, tap-on-map
+            // is enough for selection, the button serves no purpose.
+            const selectBtn = document.querySelector('.maplibregl-terradraw-add-select-button');
+            if (selectBtn) selectBtn.style.display = 'none';
+
+            // ── Hijack the Delete-selection button so it deletes OUR
+            // selectedIds (the halo-yellow ones) instead of doing nothing
+            // when terra-draw's internal selection is empty. We replace
+            // the click listener entirely.
+            const newDeleteBtn = deleteBtn.cloneNode(true);
+            deleteBtn.parentNode.replaceChild(newDeleteBtn, deleteBtn);
+            newDeleteBtn.addEventListener('click', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              if (state.selectedIds.length === 0) {
+                ui.confirm('Aucune sélection',
+                  "Sélectionnez d'abord un ou plusieurs objets (tap sur la carte) avant de supprimer.",
+                  () => {});
+                return;
+              }
+              const n = state.selectedIds.length;
+              ui.confirm('Supprimer la sélection',
+                `Supprimer ${n} objet${n > 1 ? 's' : ''} ?`,
+                () => {
+                  // Copy ids before iterating because removeFeature mutates
+                  // state.selectedIds via notifyFeatures().
+                  const idsToDelete = state.selectedIds.slice();
+                  for (const id of idsToDelete) {
+                    try { removeFeature(id); }
+                    catch (err) { log.warn('removeFeature failed for', id, err); }
+                  }
+                  state.selectedIds = [];
+                  notifyUi();
+                  log.info('[HydraulicGIS] deleted', idsToDelete.length, 'features');
+                });
+            });
+
+            log.info('[HydraulicGIS] multi-select + edit buttons installed; select hidden; delete hijacked.');
           }, delay);
         }
       }
@@ -2442,63 +2533,97 @@
         // mode). Both update state.selectedIds so the Style/Measure/etc.
         // panels become useful immediately without a detour through the
         // Calques panel.
+        // ─── Selection model ─────────────────────────────────────────
+        // Per user spec:
+        //   - Tap on a feature on the map → select (halo only, no edit).
+        //   - Multi-select toggle ON → tap adds/removes from selection.
+        //   - Edit button → terra-draw enters select mode for ONE selected feature.
+        //   - Delete button → removes all selectedIds.
+        //   - Tapping where multiple features overlap → cycles through them on
+        //     successive taps (so you can reach features hidden under others).
+        //
+        // The 'select' event from terra-draw still fires when the user is in
+        // edit mode; we let that pass through but don't change selectedIds
+        // because the selection there is just the editing target.
         if (typeof td.on === 'function') {
-          td.on('select', (terraId) => {
-            try {
-              const ours = state.features.find(f =>
-                f.geojson && f.geojson.properties && f.geojson.properties._terraId === terraId);
-              if (!ours) return;
-              // Multi-select: add to existing selection (toggle if already in).
-              // Single-select: replace selection.
-              if (state.multiSelectMode) {
-                const idx = state.selectedIds.indexOf(ours.id);
-                if (idx === -1) state.selectedIds = [...state.selectedIds, ours.id];
-                else state.selectedIds = state.selectedIds.filter(id => id !== ours.id);
-              } else {
-                if (state.selectedIds.length === 1 && state.selectedIds[0] === ours.id) return;
-                state.selectedIds = [ours.id];
-              }
-              notifyUi();
-              log.info('[HydraulicGIS] td select:', ours.id, 'multi=' + state.multiSelectMode, 'total=' + state.selectedIds.length);
-            } catch (err) { log.warn('[HydraulicGIS] td select sync failed:', err); }
-          });
-          td.on('deselect', () => {
-            // Don't auto-clear when terra-draw deselects — the user often
-            // wants the selection to persist (e.g. they entered Select to
-            // pick, then opened the Style panel; clearing on deselect would
-            // empty the panel as soon as they tap away).
-          });
+          td.on('select', () => { /* edit mode internal — ignore */ });
+          td.on('deselect', () => { /* edit mode internal — ignore */ });
         }
-        // Tap-to-select outside Select mode: hit-test td-* layers on click.
+
+        // Track the last hit position + the "cycle index" so successive taps
+        // at the SAME point cycle through stacked features. We reset the
+        // cycle when the user taps a different location (>10 px away).
+        let lastTapPx = null;
+        let lastTapStackIds = [];
+        let lastTapCycleIdx = 0;
+
         map.on('click', (e) => {
           try {
             const mode = td && td.getMode && td.getMode();
-            // In Select mode, terra-draw already handled it via the 'select'
-            // event above, so skip. In any drawing mode, the click is part
-            // of drawing — definitely don't reroute it.
+            // Don't reroute clicks during draw or edit modes — they're owned
+            // by terra-draw.
             if (mode && mode !== 'static') return;
-            const layers = ['td-point', 'td-linestring', 'td-polygon']
+
+            // Hit-test all our renderable feature layers, including derived
+            // ones, so a buffer/intersection can also be selected.
+            const layers = ['td-point', 'td-linestring', 'td-polygon',
+                            'app-derived-point', 'app-derived-line', 'app-derived-fill']
               .filter(id => map.getLayer(id));
             if (layers.length === 0) return;
             const hits = map.queryRenderedFeatures(e.point, { layers });
-            if (!hits || hits.length === 0) return;
-            // queryRenderedFeatures returns the rendered feature (with the
-            // terra-draw-injected style props), and `id` is the terra-draw
-            // feature id we stored as _terraId.
-            const terraId = hits[0].id;
-            const ours = state.features.find(f =>
-              f.geojson && f.geojson.properties && f.geojson.properties._terraId === terraId);
-            if (!ours) return;
-            // Apply same multi-select semantics as terra-draw select event.
-            if (state.multiSelectMode) {
-              const idx = state.selectedIds.indexOf(ours.id);
-              if (idx === -1) state.selectedIds = [...state.selectedIds, ours.id];
-              else state.selectedIds = state.selectedIds.filter(id => id !== ours.id);
+
+            // Resolve hits to OUR feature ids (deduplicated).
+            const ourIds = [];
+            for (const hit of (hits || [])) {
+              // From td layers, the rendered feature.id IS the terra-draw id
+              // we stored as _terraId. From app-derived layers, the rendered
+              // feature has properties.id = our feature id.
+              const tid = hit.id;
+              const propId = hit.properties && hit.properties.id;
+              const ours = state.features.find(f =>
+                (tid && f.geojson && f.geojson.properties && f.geojson.properties._terraId === tid)
+                || (propId && f.id === propId));
+              if (ours && !ourIds.includes(ours.id)) ourIds.push(ours.id);
+            }
+
+            if (ourIds.length === 0) {
+              // Tap on empty space → clear selection (single mode only)
+              if (!state.multiSelectMode && state.selectedIds.length > 0) {
+                state.selectedIds = [];
+                notifyUi();
+                lastTapPx = null;
+              }
+              return;
+            }
+
+            // Cycle-through-stacked-features logic. If the user taps at
+            // (almost) the same spot as last time AND the same set of
+            // features is hit, advance the cycle index.
+            const curPx = [e.point.x, e.point.y];
+            const samePlace = lastTapPx
+              && Math.abs(lastTapPx[0] - curPx[0]) < 10
+              && Math.abs(lastTapPx[1] - curPx[1]) < 10
+              && lastTapStackIds.length === ourIds.length
+              && lastTapStackIds.every((id, i) => id === ourIds[i]);
+            if (!samePlace) {
+              lastTapPx = curPx;
+              lastTapStackIds = ourIds.slice();
+              lastTapCycleIdx = 0;
             } else {
-              state.selectedIds = [ours.id];
+              lastTapCycleIdx = (lastTapCycleIdx + 1) % ourIds.length;
+            }
+            const pickedId = ourIds[lastTapCycleIdx];
+
+            if (state.multiSelectMode) {
+              const idx = state.selectedIds.indexOf(pickedId);
+              if (idx === -1) state.selectedIds = [...state.selectedIds, pickedId];
+              else state.selectedIds = state.selectedIds.filter(id => id !== pickedId);
+            } else {
+              state.selectedIds = [pickedId];
             }
             notifyUi();
-            log.info('[HydraulicGIS] tap-selected feature:', ours.id, 'multi=' + state.multiSelectMode, 'total=' + state.selectedIds.length);
+            log.info('[HydraulicGIS] tap-selected:', pickedId, 'multi=' + state.multiSelectMode,
+                     'stack=' + ourIds.length, 'cycleIdx=' + lastTapCycleIdx);
           } catch (err) { log.warn('[HydraulicGIS] tap-select failed:', err); }
         });
       } else {
@@ -2717,14 +2842,20 @@
         fabBadge.classList.remove('visible');
       }
 
-      // If the user is actively typing/dragging in an input INSIDE the panel,
-      // skip the panel innerHTML rewrite — it would destroy the focused element.
-      // We still update rail, badges, and overall visibility above.
+      // If the user is actively typing in a TEXT input INSIDE the panel,
+      // skip the panel innerHTML rewrite — it would destroy the focused
+      // element mid-typing. For slider/color inputs (range, color), we
+      // also skip while they're being dragged because the next mousemove
+      // would land on the new (replaced) DOM and lose the gesture.
+      // For all other cases (e.g. selection change while no input is
+      // focused), we DO re-render so the panel reflects the new selection.
       const panelEl = document.getElementById('panel-body');
       const sheetEl = document.getElementById('sheet-body');
       const af = document.activeElement;
-      const skipPanelBody = panelEl && af && panelEl.contains(af) && /^(INPUT|SELECT|TEXTAREA)$/.test(af.tagName);
-      const skipSheetBody = sheetEl && af && sheetEl.contains(af) && /^(INPUT|SELECT|TEXTAREA)$/.test(af.tagName);
+      const isLiveInput = af && /^(INPUT|SELECT|TEXTAREA)$/.test(af.tagName)
+        && !af.matches('[type="checkbox"], [type="radio"]'); // checkboxes are fine to re-render
+      const skipPanelBody = panelEl && af && panelEl.contains(af) && isLiveInput;
+      const skipSheetBody = sheetEl && af && sheetEl.contains(af) && isLiveInput;
 
       // Render desktop panel
       if (this.isMobile()) {
@@ -2913,14 +3044,14 @@
   function renderStyle() {
     const sel = state.features.filter(f => state.selectedIds.includes(f.id));
     if (sel.length === 0) {
-      return `<div class="empty-state">Sélectionnez un ou plusieurs objets dans le panneau « Calques » pour modifier leur style.</div>`;
+      return `<div class="empty-state">Sélectionnez un ou plusieurs objets sur la carte (tap directement sur l'objet) pour modifier leur style.</div>`;
     }
     const ref = sel[0].style;
     const header = sel.length === 1
-      ? `Modification de <span style="color:var(--ink-0)">${escapeHtml(sel[0].name)}</span>`
-      : `Modification de ${sel.length} objets`;
+      ? `Modification de <strong style="color:var(--brand)">${escapeHtml(sel[0].name)}</strong>`
+      : `Modification de <strong style="color:var(--brand)">${sel.length} objets</strong> sélectionnés`;
     return `
-      <div style="font-size:12px; color:var(--ink-2); margin-bottom:16px;">${header}</div>
+      <div style="font-size:13px; color:var(--ink-1); margin-bottom:14px; padding:8px 10px; background:var(--bg-3); border-radius:6px;">${header}</div>
       <div class="stack">
         <div>
           <label class="field-label">Contour</label>
@@ -3096,18 +3227,39 @@
   function attachToolsEvents(root) {
     // Buffer
     const bfBtn = root.querySelector('#bf-apply');
+    const bfIn = root.querySelector('#bf-radius');
+    if (bfIn) {
+      // Restore last value across panel re-renders.
+      if (typeof state._bufferRadius === 'number' && !isNaN(state._bufferRadius)) {
+        bfIn.value = String(state._bufferRadius);
+      }
+      bfIn.addEventListener('input', () => {
+        const v = parseFloat(String(bfIn.value).replace(',', '.'));
+        state._bufferRadius = isNaN(v) ? null : v;
+      });
+    }
     if (bfBtn) bfBtn.addEventListener('click', () => {
       const sel = state.features.filter(f => state.selectedIds.includes(f.id));
-      if (sel.length !== 1) return;
+      if (sel.length !== 1) {
+        ui.confirm('Sélection requise', 'Sélectionnez exactement 1 objet (tap sur la carte) avant de calculer le buffer.', () => {});
+        return;
+      }
       const src = sel[0];
-      const rIn = root.querySelector('#bf-radius');
-      const r = parseFloat(String(rIn.value).replace(',', '.'));
-      if (isNaN(r) || r === 0) {
+      // Read FROM THE INPUT directly at click time — but ALSO have the
+      // backup from state._bufferRadius in case the input was just reset
+      // by a panel re-render that happened mid-flight.
+      const rRaw = bfIn ? bfIn.value : '';
+      const r = parseFloat(String(rRaw).replace(',', '.'));
+      const radius = !isNaN(r) ? r
+                   : typeof state._bufferRadius === 'number' ? state._bufferRadius
+                   : NaN;
+      log.info('[HydraulicGIS] buffer requested radius =', radius, 'raw input =', JSON.stringify(rRaw));
+      if (isNaN(radius) || radius === 0) {
         ui.confirm('Rayon invalide', 'Entrez un nombre non nul (ex. 50). Un rayon négatif rétrécit le polygone.', () => {});
         return;
       }
       try {
-        const buffered = turf.buffer(src.geojson, r, { units: 'meters' });
+        const buffered = turf.buffer(src.geojson, radius, { units: 'meters' });
         if (!buffered || !buffered.geometry) {
           ui.confirm('Buffer impossible', "L'opération n'a produit aucune géométrie (rayon trop petit ou trop négatif).", () => {});
           return;
@@ -3118,11 +3270,11 @@
           type: 'Feature',
           geometry: buffered.geometry,
           properties: { _derived: true, _derivedKind: 'buffer' }
-        }, 'polygon', { name: `Buffer ${r}m de ${src.name}` });
+        }, 'polygon', { name: `Buffer ${radius}m de ${src.name}` });
         ensureDerivedLayers();
         syncDerivedLayer();
         notifyFeatures();
-        log.info('[HydraulicGIS] buffer created:', newF.id, 'r=' + r + 'm');
+        log.info('[HydraulicGIS] buffer created:', newF.id, 'r=' + radius + 'm');
       } catch (err) {
         log.error('[HydraulicGIS] buffer failed:', err);
         ui.confirm('Erreur', "Le calcul du buffer a échoué : " + (err.message || err), () => {});
@@ -3137,20 +3289,23 @@
         .filter(f => ['polygon', 'rectangle', 'circle'].includes(f.kind));
       if (polys.length < 2) return;
       try {
-        // Reduce: start with the first polygon and intersect with each next.
-        let acc = polys[0].geojson;
-        for (let i = 1; i < polys.length; i++) {
-          const next = turf.intersect(acc, polys[i].geojson);
-          if (!next) {
-            const result = root.querySelector('#it-result');
-            if (result) {
-              result.style.color = 'var(--danger)';
-              result.textContent = `Aucun chevauchement entre ${polys[0].name} et ${polys[i].name}.`;
-            }
-            return;
+        // turf.intersect (v7 signature in this bundle) takes a
+        // FeatureCollection of polygons and returns the intersection of
+        // ALL of them at once. The error "Must specify at least 2
+        // geometries" was thrown because we were passing two separate
+        // args (v6 signature) — the first arg was being read as the FC
+        // and only contained one polygon.
+        const fc = turf.featureCollection(polys.map(p => p.geojson));
+        const result = root.querySelector('#it-result');
+        const intersection = turf.intersect(fc);
+        if (!intersection || !intersection.geometry) {
+          if (result) {
+            result.style.color = 'var(--danger)';
+            result.textContent = `Aucun chevauchement entre les ${polys.length} polygones sélectionnés.`;
           }
-          acc = next;
+          return;
         }
+        const acc = intersection;
         const newF = addFeature({
           type: 'Feature',
           geometry: acc.geometry,
@@ -3159,7 +3314,6 @@
         ensureDerivedLayers();
         syncDerivedLayer();
         notifyFeatures();
-        const result = root.querySelector('#it-result');
         if (result) {
           result.style.color = 'var(--brand)';
           const areaM2 = turf.area(newF.geojson);
@@ -3334,11 +3488,28 @@
               }
             }
           }
-          // Push every segment as a tiny LineString. Visually they connect.
-          if (segments.length > 0) {
+          // Clip each segment to the source polygon. Per user spec, the
+          // contour lines should not extend beyond the object's boundary.
+          // We test the segment midpoint with turf.booleanPointInPolygon —
+          // sufficient for our short cell-edge segments (the polygon is
+          // dense relative to the 25-cell grid).
+          const clipped = [];
+          for (const seg of segments) {
+            const mid = [(seg[0][0] + seg[1][0]) / 2, (seg[0][1] + seg[1][1]) / 2];
+            try {
+              if (turf.booleanPointInPolygon(turf.point(mid), poly.geojson)) {
+                clipped.push(seg);
+              }
+            } catch (_) {
+              // If point-in-polygon fails (degenerate input), keep the segment.
+              clipped.push(seg);
+            }
+          }
+          // Push every kept segment as part of a MultiLineString for this level.
+          if (clipped.length > 0) {
             allFeatures.push({
               type: 'Feature',
-              geometry: { type: 'MultiLineString', coordinates: segments },
+              geometry: { type: 'MultiLineString', coordinates: clipped },
               properties: { level: L },
             });
           }
@@ -3352,34 +3523,57 @@
           return;
         }
 
-        // Add as a single feature (MultiLineString of all levels merged).
-        // We name it explicitly and skip the rename prompt.
+        // Build the contour feature as a single line in our store, marked
+        // as a derived feature so it's selectable / deletable / styleable.
         const merged = { type: 'MultiLineString', coordinates: [] };
         for (const f of allFeatures) merged.coordinates.push(...f.geometry.coordinates);
         const newF = addFeature({
-          type: 'Feature', geometry: merged, properties: {}
+          type: 'Feature',
+          geometry: merged,
+          // _derived flags it for our app-derived layer renderer.
+          // _kind:'contours' lets us identify and style it differently
+          // (and also lets the elevation-label generator find it).
+          properties: { _derived: true, _derivedKind: 'contours' }
         }, 'line', { name: `Courbes ${step}m de ${poly.name}` });
-        try {
-          const td2 = drawControl.getTerraDrawInstance();
-          if (td2 && typeof td2.addFeatures === 'function') {
-            // terra-draw doesn't accept MultiLineString — split into individual
-            // LineStrings. To keep it manageable we add a single sample line
-            // and rely on our own renderer if needed. For now, push the merged
-            // feature into the store and let our app-* layer handle it later.
-            // (Skip terra-draw for contours — they're a thousand line segments.)
+
+        // Generate elevation labels: place a label at the centroid of each
+        // contour level's segments (one label per level, not per segment,
+        // to avoid clutter).
+        const elevationLabelFeatures = [];
+        for (const lf of allFeatures) {
+          const segs = lf.geometry.coordinates;
+          if (!segs.length) continue;
+          // Pick the midpoint of the longest segment as label anchor.
+          let bestSeg = segs[0];
+          let bestLen = 0;
+          for (const s of segs) {
+            const dx = s[1][0] - s[0][0], dy = s[1][1] - s[0][1];
+            const len = dx * dx + dy * dy;
+            if (len > bestLen) { bestLen = len; bestSeg = s; }
           }
-        } catch (_) {}
-        // Also add a dedicated layer to render the contours, since terra-draw
-        // doesn't render MultiLineString.
-        ensureContourLayer();
-        const contourSrc = map.getSource('app-contours');
-        if (contourSrc) {
-          const cur = contourSrc._data || { type: 'FeatureCollection', features: [] };
-          contourSrc.setData({
-            type: 'FeatureCollection',
-            features: [...(cur.features || []), { type: 'Feature', geometry: merged, properties: { id: newF.id } }],
+          const mid = [(bestSeg[0][0] + bestSeg[1][0]) / 2, (bestSeg[0][1] + bestSeg[1][1]) / 2];
+          elevationLabelFeatures.push({
+            type: 'Feature',
+            geometry: { type: 'Point', coordinates: mid },
+            properties: { elevation: lf.properties.level },
           });
         }
+        ensureContourLabelsLayer();
+        const elabSrc = map.getSource('app-contour-labels');
+        if (elabSrc) {
+          // Keep accumulated labels for prior contour features by reading
+          // current data and appending.
+          const curData = elabSrc._data || { type: 'FeatureCollection', features: [] };
+          elabSrc.setData({
+            type: 'FeatureCollection',
+            features: [...(curData.features || []), ...elevationLabelFeatures],
+          });
+        }
+
+        ensureDerivedLayers();
+        // The contour line itself is rendered by app-derived-line via
+        // syncDerivedLayer (it picks up the new feature via _derived: true).
+        syncDerivedLayer();
         notifyFeatures();
         if (result) {
           result.style.color = 'var(--brand)';
@@ -3513,6 +3707,37 @@
   }
   // Backwards-compat alias kept for the contour code that calls it.
   function ensureContourLayer() { ensureDerivedLayers(); }
+
+  // Layer + source for elevation labels on contour curves.
+  function ensureContourLabelsLayer() {
+    try {
+      ensureDerivedLayers();
+      if (!map.getSource('app-contour-labels')) {
+        map.addSource('app-contour-labels', {
+          type: 'geojson', data: { type: 'FeatureCollection', features: [] },
+        });
+      }
+      if (!map.getLayer('app-contour-labels-symbol')) {
+        map.addLayer({
+          id: 'app-contour-labels-symbol', type: 'symbol', source: 'app-contour-labels',
+          layout: {
+            'text-field': ['concat', ['to-string', ['round', ['get', 'elevation']]], ' m'],
+            'text-font': ['Noto Sans Regular'],
+            'text-size': 10,
+            'text-allow-overlap': false,
+            'text-padding': 2,
+          },
+          paint: {
+            'text-color': '#ffd166',
+            'text-halo-color': '#0b0f14',
+            'text-halo-width': 1.4,
+          },
+        });
+      }
+    } catch (e) {
+      log.warn('ensureContourLabelsLayer failed:', e);
+    }
+  }
 
   /* ═══ 11. PANEL CONTENT — COORDINATES ═══════════════════════════════════════ */
   let pickModeOff = null;
