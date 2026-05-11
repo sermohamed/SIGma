@@ -444,18 +444,31 @@
     .stack-tight > * + * { margin-top: 8px; }
 
     /* ═════ MENU SHEET ═════ */
-    .menu-list { display: flex; flex-direction: column; gap: 6px; }
+    /* Per user spec: compact items + cap visible height at ~5 entries so
+       the menu doesn't cover the whole screen on mobile. The list scrolls
+       vertically if there are more. */
+    .menu-list {
+      display: flex; flex-direction: column; gap: 4px;
+      max-height: 320px;   /* ~5 items of 56px + gaps */
+      overflow-y: auto;
+      padding-right: 4px;  /* room for scrollbar */
+      -webkit-overflow-scrolling: touch;
+    }
     .menu-item {
-      display: flex; align-items: center; gap: 12px;
-      padding: 14px;
+      display: flex; align-items: center; gap: 10px;
+      padding: 9px 12px;    /* was 14px */
+      min-height: 0;
       background: var(--bg-2);
       border: 1px solid var(--line); border-radius: 6px;
       cursor: pointer;
       color: var(--ink-0); text-align: left;
+      font-size: 13px;       /* was implicit 14/15px */
+      line-height: 1.2;
       transition: background 0.15s;
     }
     .menu-item:hover { background: var(--bg-3); }
     .menu-item .icon { color: var(--brand); flex-shrink: 0; }
+    .menu-item .icon svg { width: 18px; height: 18px; }    /* was 22 */
 
     /* ═════ LAYERS LIST ═════ */
     .layer-row {
@@ -770,9 +783,6 @@
       <div id="view-controls" class="float-card">
         <button class="basemap-btn" id="vc-reset" title="Réinitialiser la vue">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 12a9 9 0 109-9v4M3 3l9 9" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        </button>
-        <button class="basemap-btn" id="vc-fullscreen" title="Plein écran">
-          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
         </button>
       </div>
 
@@ -1557,25 +1567,28 @@
         'text-field': ['get', 'name'],
         'text-font': ['Noto Sans Regular'],
         'text-size': 12,
-        // Minimal offset: pinned to the geometry centroid (or vertex for points)
+        // Minimal offset: label sits very close to the geometry centroid.
         'text-offset': [0, 0.6],
         'text-anchor': 'top',
-        // Per user spec: bigger features get priority. We push the
-        // priority value into properties.priority on each label and use
-        // it via `symbol-sort-key` (higher = drawn later = on top).
-        'symbol-sort-key': ['coalesce', ['get', 'priority'], 0],
-        // Allow overlap on the SAME geometry but use a small padding so
-        // adjacent labels don't smash into each other. The placement
-        // engine then enforces the priority-based ordering above.
-        'text-allow-overlap': false,
-        'text-ignore-placement': false,
-        'text-padding': 4,
+        // CRITICAL: allow overlap so the labels actually render. Without
+        // this, MapLibre's placement engine finds the basemap labels (ESRI
+        // World Imagery already serves road/place names) and our user-name
+        // labels collide with them and get hidden. Forcing them visible
+        // is the only way the user actually sees them. We accept that two
+        // user labels right next to each other may overlap; the priority
+        // below mitigates this for the common case.
+        'text-allow-overlap': true,
+        'text-ignore-placement': true,
+        // Higher priority value = drawn LATER = on top. We invert priority
+        // so big features have higher z and land above small ones in the
+        // rare case where two of OUR labels overlap.
+        'symbol-sort-key': ['*', -1, ['coalesce', ['get', 'priority'], 0]],
       },
       paint: {
-        'text-color': '#f6f8fb',
+        'text-color': '#ffffff',
         'text-halo-color': '#0b0f14',
-        'text-halo-width': 1.6,
-        'text-halo-blur': 0.4,
+        'text-halo-width': 2,
+        'text-halo-blur': 0.5,
       },
     });
   }
@@ -1686,6 +1699,9 @@
     // Re-sync derived features (buffers, intersections) so visibility
     // toggles in Calques affect them too.
     try { syncDerivedLayer(); } catch (_) {}
+    // Live legend refresh: visible/name/style changes flow into the box
+    // without any user intervention.
+    try { if (typeof updateLegendBox === 'function') updateLegendBox(); } catch (_) {}
 
     // Sync visibility from our store to terra-draw's render layers.
     // The eye icon in Calques toggles f.style.visible. We were previously
@@ -2559,10 +2575,18 @@
 
         map.on('click', (e) => {
           try {
-            const mode = td && td.getMode && td.getMode();
-            // Don't reroute clicks during draw or edit modes — they're owned
-            // by terra-draw.
-            if (mode && mode !== 'static') return;
+            // Get current terra-draw mode safely. If anything throws or
+            // returns nothing, treat it as 'static' (i.e. allow tap-select).
+            let mode = 'static';
+            try {
+              if (td && typeof td.getMode === 'function') {
+                const m = td.getMode();
+                if (m) mode = m;
+              }
+            } catch (_) {}
+            // Only block tap-select when an active drawing mode is in use.
+            const drawingModes = ['point', 'linestring', 'polygon', 'rectangle', 'circle', 'freehand'];
+            if (drawingModes.includes(mode)) return;
 
             // Hit-test all our renderable feature layers, including derived
             // ones, so a buffer/intersection can also be selected.
@@ -2958,6 +2982,17 @@
       const metrics = f.metrics.areaSquareMeters !== undefined ? formatArea(f.metrics.areaSquareMeters)
                     : f.metrics.lengthMeters !== undefined ? formatDistance(f.metrics.lengthMeters)
                     : '';
+      // Tag derived features (buffer / intersection / contours) so the
+      // user can easily spot them in the list. The label appears next to
+      // the metric line in a muted color.
+      const derivedKind = f.geojson && f.geojson.properties && f.geojson.properties._derivedKind;
+      const derivedLbl = derivedKind === 'buffer' ? 'buffer'
+                       : derivedKind === 'intersection' ? 'intersection'
+                       : derivedKind === 'contours' ? 'courbes'
+                       : null;
+      const derivedBadge = derivedLbl
+        ? `<span style="display:inline-block; margin-left:6px; padding:1px 6px; background:rgba(251,196,18,0.15); color:#fbc412; font-size:10px; border-radius:8px; vertical-align:middle;">${derivedLbl}</span>`
+        : '';
       const eyeIcon = f.style.visible
         ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>`
         : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7c2.4 0 4.4 1 6 2.2M22 12s-3.5 7-10 7c-2.4 0-4.4-1-6-2.2M3 3l18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
@@ -2965,7 +3000,7 @@
         <div class="layer-row${sel ? ' selected' : ''}${f.style.visible ? '' : ' hidden'}" data-id="${f.id}">
           <span class="swatch" style="background:${f.style.fill}"></span>
           <div style="flex:1; min-width:0;">
-            <button class="layer-name" data-action="select" data-id="${f.id}" ondblclick="layerStartRename('${f.id}')" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}</button>
+            <button class="layer-name" data-action="select" data-id="${f.id}" ondblclick="layerStartRename('${f.id}')" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}${derivedBadge}</button>
             ${metrics ? `<div class="layer-metrics">${metrics}</div>` : ''}
           </div>
           <button class="layer-action" data-action="zoom" data-id="${f.id}" title="Centrer">
@@ -3219,6 +3254,35 @@
                     style="white-space:nowrap;">Tracer</button>
           </div>
           <div id="cn-result" style="font-size:12px; margin-top:8px;"></div>
+        </div>
+
+        <!-- ─── Legend tool ───────────────────────────────────────── -->
+        <div class="surface">
+          <div class="field-label" style="margin-bottom:6px;">Légende sur la carte</div>
+          <p style="font-size:12px; color:var(--ink-1); margin:0 0 10px;">
+            Affiche une boîte avec la liste des objets visibles, leur couleur et leur nom.
+          </p>
+          <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; cursor:pointer;">
+            <input type="checkbox" id="lg-enabled" ${state._legend?.enabled ? 'checked' : ''} />
+            <span>Afficher la légende</span>
+          </label>
+          <label class="field-label" style="font-size:11px; margin-top:6px;">Titre</label>
+          <input type="text" id="lg-title" class="field" autocapitalize="off" autocorrect="off"
+                 value="${escapeHtml((state._legend && state._legend.title) || 'Légende')}"
+                 style="margin-bottom:8px;" />
+          <label class="field-label" style="font-size:11px;">Position</label>
+          <select id="lg-position" class="field" style="margin-bottom:8px;">
+            <option value="top-left" ${(state._legend?.position === 'top-left') ? 'selected' : ''}>Haut-gauche</option>
+            <option value="top-right" ${(state._legend?.position === 'top-right') ? 'selected' : ''}>Haut-droite</option>
+            <option value="bottom-left" ${(state._legend?.position === 'bottom-left') ? 'selected' : ''}>Bas-gauche</option>
+            <option value="bottom-right" ${(!state._legend || state._legend?.position === 'bottom-right' || !state._legend?.position) ? 'selected' : ''}>Bas-droite</option>
+          </select>
+          <label class="field-label" style="font-size:11px;">Taille du texte</label>
+          <select id="lg-fontsize" class="field">
+            <option value="11" ${(state._legend?.fontSize === 11) ? 'selected' : ''}>Petit</option>
+            <option value="13" ${(!state._legend || state._legend?.fontSize === 13 || !state._legend?.fontSize) ? 'selected' : ''}>Moyen</option>
+            <option value="15" ${(state._legend?.fontSize === 15) ? 'selected' : ''}>Grand</option>
+          </select>
         </div>
       </div>
     `;
@@ -3591,6 +3655,96 @@
         cnBtn.textContent = origLabel;
       }
     });
+
+    // ─── Legend handlers ────────────────────────────────────────────
+    // The legend is rendered by updateLegendBox() (declared elsewhere)
+    // and reads from state._legend. The user changes settings in this
+    // panel and we just persist + trigger a re-render of the box.
+    function ensureLegendState() {
+      if (!state._legend) {
+        state._legend = { enabled: false, title: 'Légende', position: 'bottom-right', fontSize: 13 };
+      }
+    }
+    ensureLegendState();
+    const lgEnabled = root.querySelector('#lg-enabled');
+    const lgTitle = root.querySelector('#lg-title');
+    const lgPosition = root.querySelector('#lg-position');
+    const lgFontSize = root.querySelector('#lg-fontsize');
+    if (lgEnabled) lgEnabled.addEventListener('change', () => {
+      state._legend.enabled = lgEnabled.checked;
+      updateLegendBox();
+    });
+    if (lgTitle) lgTitle.addEventListener('input', () => {
+      state._legend.title = lgTitle.value;
+      updateLegendBox();
+    });
+    if (lgPosition) lgPosition.addEventListener('change', () => {
+      state._legend.position = lgPosition.value;
+      updateLegendBox();
+    });
+    if (lgFontSize) lgFontSize.addEventListener('change', () => {
+      state._legend.fontSize = parseInt(lgFontSize.value, 10) || 13;
+      updateLegendBox();
+    });
+  }
+
+  // ─── Legend renderer ──────────────────────────────────────────────
+  // Lazy-creates a floating box on the map and re-renders its content
+  // whenever the visible feature list or settings change. Called from
+  // both the tools panel handlers (above) and from syncFeaturesToMap
+  // (so adding/removing/hiding an object refreshes the legend live).
+  function updateLegendBox() {
+    let box = document.getElementById('legend-box');
+    const cfg = state._legend || { enabled: false };
+    if (!cfg.enabled) {
+      if (box) box.style.display = 'none';
+      return;
+    }
+    if (!box) {
+      box = document.createElement('div');
+      box.id = 'legend-box';
+      const appEl = document.getElementById('app') || document.body;
+      appEl.appendChild(box);
+    }
+    // Position
+    box.style.cssText = '';
+    box.style.position = 'absolute';
+    box.style.zIndex = '20';
+    box.style.background = 'rgba(15, 19, 26, 0.92)';
+    box.style.border = '1px solid var(--line)';
+    box.style.borderRadius = '8px';
+    box.style.padding = '10px 12px';
+    box.style.minWidth = '160px';
+    box.style.maxWidth = '220px';
+    box.style.maxHeight = '40vh';
+    box.style.overflowY = 'auto';
+    box.style.color = 'var(--ink-0)';
+    box.style.fontSize = (cfg.fontSize || 13) + 'px';
+    box.style.lineHeight = '1.4';
+    box.style.boxShadow = '0 4px 16px rgba(0,0,0,0.5)';
+    box.style.display = 'block';
+    // Position offsets (avoid overlap with sidebar + map controls)
+    const pos = cfg.position || 'bottom-right';
+    box.style.top = box.style.bottom = box.style.left = box.style.right = 'auto';
+    if (pos === 'top-left')      { box.style.top = '60px';    box.style.left = '74px'; }
+    else if (pos === 'top-right')    { box.style.top = '60px';    box.style.right = '10px'; }
+    else if (pos === 'bottom-left')  { box.style.bottom = '40px'; box.style.left = '74px'; }
+    else                              { box.style.bottom = '40px'; box.style.right = '10px'; }
+
+    // Content: visible features
+    const items = state.features.filter(f => f.style && f.style.visible);
+    const header = `<div style="font-weight:600; margin-bottom:6px; color:var(--brand);">${escapeHtml(cfg.title || 'Légende')}</div>`;
+    if (items.length === 0) {
+      box.innerHTML = header + '<div style="color:var(--ink-2); font-style:italic;">(Aucun objet)</div>';
+      return;
+    }
+    const rows = items.map(f => {
+      const swatch = f.kind === 'line'
+        ? `<span style="display:inline-block; width:14px; height:3px; background:${f.style.stroke}; margin-right:6px; vertical-align:middle;"></span>`
+        : `<span style="display:inline-block; width:12px; height:12px; background:${f.style.fill}; border:1px solid ${f.style.stroke}; margin-right:6px; vertical-align:middle; border-radius:2px;"></span>`;
+      return `<div style="margin-bottom:3px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${swatch}${escapeHtml(f.name)}</div>`;
+    }).join('');
+    box.innerHTML = header + rows;
   }
 
   // Lazy-create the contour rendering layer. Contours go in their own
@@ -4934,17 +5088,9 @@
     btn.addEventListener('click', () => setBasemap(btn.dataset.basemap));
   });
 
-  // ═══ View controls (reset view + fullscreen) ═══════════════════════════════
+  // ═══ View controls (reset view) ════════════════════════════════════════════
   document.getElementById('vc-reset')?.addEventListener('click', () => {
     map.flyTo({ center: [-5.0, 33.5], zoom: 5, essential: true });
-  });
-  document.getElementById('vc-fullscreen')?.addEventListener('click', () => {
-    const el = document.documentElement;
-    if (!document.fullscreenElement) {
-      (el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen)?.call(el);
-    } else {
-      (document.exitFullscreen || document.webkitExitFullscreen)?.call(document);
-    }
   });
 
   // Close sheet on resize across breakpoint
