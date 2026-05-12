@@ -827,14 +827,14 @@
            via the debug button (added below). -->
       <div id="td-hud" class="float-card" style="display:block;">
         <div style="font-weight:600; font-size:11px; color:var(--ink-1); margin-bottom:4px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
-          <span>Diagnostic terra-draw</span>
+          <span>Diagnostic</span>
           <button onclick="document.getElementById('td-hud').style.display='none'" style="background:transparent; border:none; color:var(--ink-2); cursor:pointer; padding:0; font-size:14px;">×</button>
         </div>
         <div style="font-family:'JetBrains Mono',ui-monospace,monospace; font-size:10px; line-height:1.5; color:var(--ink-0);">
           <div>Mode: <b id="hud-mode">—</b></div>
-          <div>Features: <b id="hud-count">0</b></div>
-          <div>Couches td-*: <b id="hud-layers">—</b></div>
+          <div>Sél: <b id="hud-sel">0</b> | Multi: <b id="hud-multi">OFF</b></div>
           <div>Dernier event: <b id="hud-event">—</b></div>
+          <div id="hud-log" style="margin-top:4px; max-height:80px; overflow-y:auto; font-size:9px; color:var(--ink-1); border-top:1px solid var(--line); padding-top:4px;"></div>
         </div>
       </div>
 
@@ -1151,13 +1151,17 @@
   function syncSelectionHighlight() {
     try {
       if (!map.isStyleLoaded()) return;
-      if (!map.getSource('app-selection')) return;
+      if (!map.getSource('app-selection')) {
+        if (typeof hudLog === 'function') hudLog('halo: src missing');
+        return;
+      }
       const selFeatures = state.features
         .filter(f => state.selectedIds.includes(f.id))
         .map(f => f.geojson);
       map.getSource('app-selection').setData({
         type: 'FeatureCollection', features: selFeatures
       });
+      if (typeof hudLog === 'function') hudLog('halo: ' + selFeatures.length + ' feat');
       // Keep the halo above td-* in case a redraw moved it.
       if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
       if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
@@ -1765,6 +1769,30 @@
     const el = document.getElementById('td-hud');
     if (el) el.style.display = '';
   }
+  // Write a line to the user-visible log inside the HUD. Survives the
+  // last 20 entries.
+  function hudLog(msg) {
+    try {
+      const logEl = document.getElementById('hud-log');
+      if (!logEl) return;
+      const line = document.createElement('div');
+      const t = new Date();
+      const ts = String(t.getHours()).padStart(2, '0') + ':' +
+                 String(t.getMinutes()).padStart(2, '0') + ':' +
+                 String(t.getSeconds()).padStart(2, '0');
+      line.textContent = ts + ' ' + msg;
+      logEl.appendChild(line);
+      // Auto-scroll to bottom
+      logEl.scrollTop = logEl.scrollHeight;
+      // Keep only the last 30 lines.
+      while (logEl.children.length > 30) logEl.removeChild(logEl.firstChild);
+      // Also update the live counters
+      const selEl = document.getElementById('hud-sel');
+      const multiEl = document.getElementById('hud-multi');
+      if (selEl && typeof state !== 'undefined') selEl.textContent = state.selectedIds.length;
+      if (multiEl && typeof state !== 'undefined') multiEl.textContent = state.multiSelectMode ? 'ON' : 'OFF';
+    } catch (_) {}
+  }
   function updateHud(eventLabel) {
     if (!isDebugMode && !document.getElementById('td-hud') ||
         document.getElementById('td-hud').style.display === 'none') return;
@@ -1869,22 +1897,27 @@
       // pre-select a mode (often 'select') which would intercept the
       // user's first tap. Static = idle, no mode active, taps reach our
       // map.on('click') tap-select handler.
-      try {
-        setTimeout(() => {
+      // Patch terra-draw's select-mode flags with a few retries to be
+      // sure the mode is fully constructed by the time we touch it.
+      let _flagsPatched = false;
+      function tryPatchFlags() {
+        if (_flagsPatched) return;
+        try {
           const tdInst = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
-          if (tdInst && typeof tdInst.setMode === 'function') {
-            tdInst.setMode('static');
-            log.info('[HydraulicGIS] terra-draw initial mode forced to static.');
+          if (!tdInst) { hudLog('init: td not ready, retry'); return; }
+          tdInst.setMode('static');
+          const ok = setSelectEditFlags(tdInst, false);
+          if (ok) {
+            _flagsPatched = true;
+            hudLog('init: flags patched OK');
+          } else {
+            hudLog('init: flags patch returned false');
           }
-          // Also: disable edit-on-select by default. Terra-draw's
-          // built-in select-mode automatically shows vertices and makes
-          // them draggable when you tap a feature. The user wants
-          // selection ≠ editing, so we patch the flags to "select-only".
-          // The Edit button (custom) re-enables them when needed.
-          try { setSelectEditFlags(tdInst, false); }
-          catch (e) { log.warn('[HydraulicGIS] could not patch select flags:', e); }
-        }, 0);
-      } catch (_) {}
+        } catch (e) {
+          hudLog('init: ERR ' + e.message);
+        }
+      }
+      for (const d of [0, 50, 200, 500, 1000, 2000]) setTimeout(tryPatchFlags, d);
 
       // ─── Select-mode flag patching ────────────────────────────────────
       // We expose two states for the select-mode flags:
@@ -1915,9 +1948,10 @@
           selMode.flags = JSON.parse(JSON.stringify(_originalSelectFlags));
         } else {
           // Replace flags with a "select-only" profile: no draggable,
-          // no midpoints, no deletable coordinates. We keep the SAME
-          // mode names as keys so terra-draw's select() function finds
-          // them (otherwise it returns early in select()).
+          // no midpoints, NO selection points (vertices). Terra-draw's
+          // select() function creates selectionPoints only if
+          // `flags[mode].feature.coordinates` is TRUTHY. So we set it
+          // to false (falsy) — that's how we disable vertex display.
           const noEditFlags = {};
           for (const modeName of Object.keys(_originalSelectFlags)) {
             noEditFlags[modeName] = {
@@ -1925,11 +1959,7 @@
                 draggable: false,
                 rotateable: false,
                 scaleable: false,
-                coordinates: {
-                  midpoints: false,
-                  draggable: false,
-                  deletable: false,
-                },
+                coordinates: false,   // <-- FALSY, so no vertices
               },
             };
           }
@@ -2095,18 +2125,14 @@
             if (ev) { ev.preventDefault(); ev.stopPropagation(); }
             state.multiSelectMode = !state.multiSelectMode;
             multiBtn.classList.toggle('active', state.multiSelectMode);
-            // Per user spec #3: switching Multi (in either direction)
-            // clears the current selection. The user starts fresh in
-            // the new mode.
             state.selectedIds = [];
-            // Also clear terra-draw's internal selection.
             try {
               const tdInst = drawControl.getTerraDrawInstance();
               if (tdInst && typeof tdInst.deselectFeature === 'function') {
                 tdInst.deselectFeature();
               }
             } catch (_) {}
-            log.info('[Multi] = ' + (state.multiSelectMode ? 'ON ✓' : 'OFF') + ' (selection cleared)');
+            hudLog('Multi=' + (state.multiSelectMode ? 'ON' : 'OFF') + ' selection cleared');
             notifyUi();
           };
 
@@ -2677,19 +2703,24 @@
         if (typeof td.on === 'function') {
           td.on('select', (terraId) => {
             try {
+              hudLog('td.on(select) ' + terraId);
               const ours = state.features.find(f =>
                 f.geojson && f.geojson.properties && f.geojson.properties._terraId === terraId);
-              if (!ours) return;
+              if (!ours) {
+                hudLog('  → no matching feature in state');
+                return;
+              }
               if (state.multiSelectMode) {
                 if (!state.selectedIds.includes(ours.id)) {
                   state.selectedIds = [...state.selectedIds, ours.id];
                 }
+                hudLog('  → ADD ' + ours.id + ' total=' + state.selectedIds.length);
               } else {
                 state.selectedIds = [ours.id];
+                hudLog('  → SET ' + ours.id);
               }
               notifyUi();
-              log.info('[HydraulicGIS] td select →', ours.id, '(multi=' + state.multiSelectMode + ', total=' + state.selectedIds.length + ')');
-            } catch (e) { log.warn('td.on select sync failed:', e); }
+            } catch (e) { hudLog('  ERR ' + e.message); }
           });
           td.on('deselect', () => { /* ignore — keep our halo until user clears it explicitly */ });
         }
@@ -2804,22 +2835,20 @@
           }
           // Track select mode transitions for the selection-clearing rule.
           const isInSelectMode = (mode === 'select');
+          if (_wasInSelectMode !== isInSelectMode) {
+            hudLog('mode: ' + (isInSelectMode ? '→ select' : '← left select'));
+          }
           if (_wasInSelectMode && !isInSelectMode) {
-            // Just LEFT select mode → clear the yellow halo entirely.
-            log.info('[HydraulicGIS] leaving select mode → clearing selection');
             state.selectedIds = [];
-            // Also turn off Multi if it was on (so the user starts fresh
-            // the next time they enter select mode).
             if (state.multiSelectMode) {
               state.multiSelectMode = false;
               const mb = document.getElementById('hgis-multi-btn');
               if (mb) mb.classList.remove('active');
             }
-            // Reset edit flags + edit button state so vertices don't
-            // come back next time the user enters select-mode.
             try { setSelectEditFlags(td, false); } catch (_) {}
             const eb = document.getElementById('hgis-edit-btn');
             if (eb) eb.classList.remove('active');
+            hudLog('  → cleared selection + Multi/Edit OFF');
             notifyUi();
           }
           _wasInSelectMode = isInSelectMode;
