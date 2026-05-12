@@ -1976,149 +1976,147 @@
       }
       installDrawDropdown();
 
+      // ─── Multi-select / Edit / Delete buttons ──────────────────────
+      // Keep it simple: wait until the terra-draw toolbar exists in the
+      // DOM, then append THREE buttons after the terra-draw delete button.
+      // Each button uses a direct .onclick = ... handler — no cloning, no
+      // capture phase, no stopPropagation. Just plain DOM.
       function installMultiSelectButton() {
-        const tries = [0, 50, 200, 500, 1000];
-        for (const delay of tries) {
-          setTimeout(() => {
-            // Already installed?
-            if (document.getElementById('hgis-multi-select-btn')) return;
-            const deleteBtn = document.querySelector('.maplibregl-terradraw-delete-selection-button');
-            if (!deleteBtn || !deleteBtn.parentNode) return;
+        let installed = false;
+        const tryInstall = () => {
+          if (installed) return;
+          // The terra-draw ctrl group lives somewhere in the DOM (we moved
+          // it into #draw-drawer earlier). Find ANY button inside it that
+          // we can anchor to — the polygon button always exists since
+          // 'polygon' is in our modes list.
+          const ctrlGroup = document.querySelector('.maplibregl-ctrl-group');
+          if (!ctrlGroup) return false;
+          // Don't install twice.
+          if (ctrlGroup.querySelector('#hgis-multi-btn')) { installed = true; return true; }
 
-            // ── Multi-select toggle button
-            const multiBtn = document.createElement('button');
-            multiBtn.id = 'hgis-multi-select-btn';
-            multiBtn.type = 'button';
-            multiBtn.title = 'Sélection multiple';
-            multiBtn.setAttribute('aria-label', 'Activer la sélection multiple');
-            multiBtn.innerHTML = `
-              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#5f6368" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
-                <rect x="3" y="3" width="8" height="8" rx="1"/>
-                <polyline points="5,7 7,9 9,5" stroke-width="2.4"/>
-                <rect x="13" y="13" width="8" height="8" rx="1"/>
-                <polyline points="15,17 17,19 19,15" stroke-width="2.4"/>
-              </svg>`;
-            multiBtn.className = 'maplibregl-terradraw-add-control';
-            multiBtn.style.cssText = 'background-image:none; background-color:transparent;';
-            multiBtn.addEventListener('click', (ev) => {
-              log.info('[HydraulicGIS] multi-select button clicked');
-              ev.preventDefault();
-              ev.stopPropagation();
-              state.multiSelectMode = !state.multiSelectMode;
-              multiBtn.classList.toggle('active', state.multiSelectMode);
-              if (!state.multiSelectMode) log.info('[HydraulicGIS] multi-select OFF');
-              else log.info('[HydraulicGIS] multi-select ON');
-              notifyUi();
-            });
-            deleteBtn.parentNode.insertBefore(multiBtn, deleteBtn);
+          // Helper: makes a button styled identically to terra-draw's own
+          // buttons. We reuse the .maplibregl-ctrl-icon class for sizing.
+          function makeBtn(id, title, svg, handler) {
+            const b = document.createElement('button');
+            b.id = id;
+            b.type = 'button';
+            b.title = title;
+            b.setAttribute('aria-label', title);
+            // Match the terra-draw button look (same size as the others).
+            b.className = 'maplibregl-terradraw-add-control hgis-custom-btn';
+            b.style.cssText = 'background-image:none; background-color:transparent;';
+            b.innerHTML = svg;
+            b.onclick = (ev) => {
+              if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+              log.info('[HydraulicGIS] ' + id + ' clicked');
+              handler();
+            };
+            return b;
+          }
 
-            // ── Edit button (between multi-select and delete)
-            // Reason: when terra-draw's Select mode highlights a feature, it
-            // ALSO immediately enters edit mode (showing vertices, draggable
-            // mid-points). With multi-select that means only the FIRST tapped
-            // feature shows vertices and the rest look unhighlighted. By
-            // separating "select" from "edit" we let the user multi-select
-            // freely (no vertices shown) and explicitly tap Edit when they
-            // want to drag vertices on a single feature.
-            const editBtn = document.createElement('button');
-            editBtn.id = 'hgis-edit-btn';
-            editBtn.type = 'button';
-            editBtn.title = 'Éditer (déplacer les sommets)';
-            editBtn.setAttribute('aria-label', 'Éditer la sélection');
-            editBtn.innerHTML = `
-              <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#5f6368" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
-                <path d="M12 20h9"/>
-                <path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"/>
-              </svg>`;
-            editBtn.className = 'maplibregl-terradraw-add-control';
-            editBtn.style.cssText = 'background-image:none; background-color:transparent;';
-            editBtn.addEventListener('click', (ev) => {
-              log.info('[HydraulicGIS] edit button clicked');
-              ev.preventDefault();
-              ev.stopPropagation();
-              try {
-                const td2 = drawControl.getTerraDrawInstance();
-                if (!td2) return;
-                // Toggle: if already in select mode, leave it (back to static)
-                if (td2.getMode() === 'select') {
-                  td2.setMode('static');
-                  editBtn.classList.remove('active');
-                  log.info('[HydraulicGIS] edit mode OFF');
-                  return;
-                }
-                if (state.selectedIds.length === 0) {
-                  ui.confirm('Aucune sélection',
-                    "Sélectionnez d'abord un objet sur la carte ou dans Calques, puis touchez Éditer.",
-                    () => {});
-                  return;
-                }
-                // Edit only the FIRST selected feature (terra-draw's select
-                // mode is single-select internally — vertices for one shape).
-                const firstId = state.selectedIds[0];
-                const ours = state.features.find(f => f.id === firstId);
-                if (!ours || !ours.geojson || !ours.geojson.properties || !ours.geojson.properties._terraId) {
-                  log.warn('[HydraulicGIS] cannot enter edit mode: feature has no terraId');
-                  return;
-                }
-                const terraId = ours.geojson.properties._terraId;
-                td2.setMode('select');
-                // selectFeature must be called AFTER setMode('select').
-                if (typeof td2.selectFeature === 'function') {
-                  try { td2.selectFeature(terraId); }
-                  catch (e) { log.warn('[HydraulicGIS] selectFeature failed:', e); }
-                }
-                editBtn.classList.add('active');
-                if (state.selectedIds.length > 1) {
-                  log.info('[HydraulicGIS] edit mode ON for', firstId, '(other selected items are highlighted but not editable)');
-                } else {
-                  log.info('[HydraulicGIS] edit mode ON for', firstId);
-                }
-              } catch (err) { log.warn('[HydraulicGIS] edit toggle failed:', err); }
-            });
-            deleteBtn.parentNode.insertBefore(editBtn, deleteBtn);
+          const multiSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
+              <rect x="3" y="3" width="8" height="8" rx="1"/>
+              <polyline points="5,7 7,9 9,5" stroke-width="2.4"/>
+              <rect x="13" y="13" width="8" height="8" rx="1"/>
+              <polyline points="15,17 17,19 19,15" stroke-width="2.4"/>
+            </svg>`;
+          const editSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
+              <path d="M12 20h9"/>
+              <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            </svg>`;
+          const deleteSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
+              <polyline points="3 6 5 6 21 6"/>
+              <path d="M19 6l-1 14a2 2 0 01-2 2H8a2 2 0 01-2-2L5 6"/>
+              <path d="M10 11v6M14 11v6"/>
+            </svg>`;
 
-            // ── Per user request, the terra-draw "Select" button is
-            // visible (between Cercle and Sélection multiple). When the
-            // user taps it terra-draw enters select-mode internally; our
-            // tap-select on the map still works alongside (the click
-            // handler below allows both 'static' and 'select' modes).
-            // Nothing to do here — terra-draw shows it by default; we
-            // just don't hide it.
+          // ── Multi-select toggle
+          const multiBtn = makeBtn('hgis-multi-btn', 'Sélection multiple', multiSvg, () => {
+            state.multiSelectMode = !state.multiSelectMode;
+            multiBtn.classList.toggle('active', state.multiSelectMode);
+            notifyUi();
+          });
+          // Restore visual state on re-install (e.g. after a re-render).
+          if (state.multiSelectMode) multiBtn.classList.add('active');
 
-            // ── Override the Delete-selection button so it deletes OUR
-            // selectedIds (the halo-yellow ones). Instead of cloning and
-            // replacing the button (which loses any future listeners
-            // terra-draw might add), we attach a CAPTURE-PHASE listener
-            // that stops the propagation, preventing terra-draw's own
-            // handler from running.
-            deleteBtn.addEventListener('click', (ev) => {
-              ev.preventDefault();
-              ev.stopImmediatePropagation();
-              log.info('[HydraulicGIS] delete button clicked (captured)');
+          // ── Edit (enter terra-draw select-mode on the selected feature)
+          const editBtn = makeBtn('hgis-edit-btn', 'Éditer la sélection', editSvg, () => {
+            try {
+              const td2 = drawControl.getTerraDrawInstance();
+              if (!td2) return;
+              // Toggle off if already editing.
+              if (td2.getMode() === 'select') {
+                td2.setMode('static');
+                editBtn.classList.remove('active');
+                return;
+              }
               if (state.selectedIds.length === 0) {
                 ui.confirm('Aucune sélection',
-                  "Sélectionnez d'abord un ou plusieurs objets (tap sur la carte) avant de supprimer.",
+                  "Sélectionnez d'abord un objet (tap sur la carte ou dans Calques), puis touchez Éditer.",
                   () => {});
                 return;
               }
-              const n = state.selectedIds.length;
-              ui.confirm('Supprimer la sélection',
-                `Supprimer ${n} objet${n > 1 ? 's' : ''} ?`,
-                () => {
-                  const idsToDelete = state.selectedIds.slice();
-                  for (const id of idsToDelete) {
-                    try { removeFeature(id); }
-                    catch (err) { log.warn('removeFeature failed for', id, err); }
-                  }
-                  state.selectedIds = [];
-                  notifyUi();
-                  log.info('[HydraulicGIS] deleted', idsToDelete.length, 'features');
-                });
-            }, true);  // CAPTURE phase — runs before terra-draw's bubble handler
+              if (state.selectedIds.length > 1) {
+                ui.confirm('Sélection multiple',
+                  "L'édition ne fonctionne que sur un seul objet à la fois. Le premier objet de la sélection sera édité.",
+                  () => doEdit());
+                return;
+              }
+              doEdit();
+              function doEdit() {
+                const firstId = state.selectedIds[0];
+                const ours = state.features.find(f => f.id === firstId);
+                if (!ours || !ours.geojson.properties._terraId) return;
+                td2.setMode('select');
+                if (typeof td2.selectFeature === 'function') {
+                  try { td2.selectFeature(ours.geojson.properties._terraId); }
+                  catch (e) { log.warn('selectFeature failed:', e); }
+                }
+                editBtn.classList.add('active');
+              }
+            } catch (err) { log.warn('edit failed:', err); }
+          });
 
-            log.info('[HydraulicGIS] multi-select + edit buttons installed; delete overridden.');
-          }, delay);
-        }
+          // ── Delete-selection (replaces the native terra-draw one)
+          const deleteBtn = makeBtn('hgis-delete-btn', 'Supprimer la sélection', deleteSvg, () => {
+            if (state.selectedIds.length === 0) {
+              ui.confirm('Aucune sélection',
+                "Sélectionnez d'abord un ou plusieurs objets avant de supprimer.",
+                () => {});
+              return;
+            }
+            const n = state.selectedIds.length;
+            ui.confirm('Supprimer',
+              `Supprimer ${n} objet${n > 1 ? 's' : ''} ?`,
+              () => {
+                const idsToDelete = state.selectedIds.slice();
+                state.selectedIds = [];
+                for (const id of idsToDelete) {
+                  try { removeFeature(id); }
+                  catch (err) { log.warn('removeFeature failed:', id, err); }
+                }
+                notifyUi();
+              });
+          });
+
+          // Hide the native terra-draw delete-selection button (we have
+          // our own now; theirs requires terra-draw's internal selection).
+          const nativeDelete = ctrlGroup.querySelector('.maplibregl-terradraw-delete-selection-button');
+          if (nativeDelete) nativeDelete.style.display = 'none';
+
+          // Append our 3 buttons at the end of the ctrl group.
+          ctrlGroup.appendChild(multiBtn);
+          ctrlGroup.appendChild(editBtn);
+          ctrlGroup.appendChild(deleteBtn);
+
+          installed = true;
+          log.info('[HydraulicGIS] custom multi/edit/delete buttons installed.');
+          return true;
+        };
+        // Retry with growing delays until terra-draw's toolbar exists.
+        // Stops once installed.
+        const delays = [0, 50, 150, 400, 900, 1800];
+        for (const d of delays) setTimeout(tryInstall, d);
       }
       installMultiSelectButton();
 
