@@ -2095,8 +2095,18 @@
             if (ev) { ev.preventDefault(); ev.stopPropagation(); }
             state.multiSelectMode = !state.multiSelectMode;
             multiBtn.classList.toggle('active', state.multiSelectMode);
-            // Visible feedback in case the user is unsure of state.
-            log.info('[Multi] = ' + (state.multiSelectMode ? 'ON ✓' : 'OFF'));
+            // Per user spec #3: switching Multi (in either direction)
+            // clears the current selection. The user starts fresh in
+            // the new mode.
+            state.selectedIds = [];
+            // Also clear terra-draw's internal selection.
+            try {
+              const tdInst = drawControl.getTerraDrawInstance();
+              if (tdInst && typeof tdInst.deselectFeature === 'function') {
+                tdInst.deselectFeature();
+              }
+            } catch (_) {}
+            log.info('[Multi] = ' + (state.multiSelectMode ? 'ON ✓' : 'OFF') + ' (selection cleared)');
             notifyUi();
           };
 
@@ -2691,10 +2701,20 @@
         let lastTapStackIds = [];
         let lastTapCycleIdx = 0;
 
+        // ─── Tap-to-select (only in select-mode) ────────────────────────
+        //
+        // Per user spec, the SELECT mode (toggled by the arrow button) is
+        // the gate for selection:
+        //   • Mode is NOT 'select' (static, or drawing) → tap does nothing.
+        //   • Mode IS 'select', Multi OFF → tap = replace selection.
+        //   • Mode IS 'select', Multi ON  → tap = toggle in/out of selection.
+        //
+        // We piggyback on terra-draw's own pointer event in select-mode
+        // (which fires 'select' with the terra-draw feature id). Our
+        // map.on('click') is the fallback for derived features (which
+        // terra-draw doesn't know about — buffers, intersections, contours).
         map.on('click', (e) => {
           try {
-            // Get current terra-draw mode safely. If anything throws or
-            // returns nothing, treat it as 'static' (i.e. allow tap-select).
             let mode = 'static';
             try {
               if (td && typeof td.getMode === 'function') {
@@ -2702,53 +2722,36 @@
                 if (m) mode = m;
               }
             } catch (_) {}
-            // Only block tap-select when an active drawing mode is in use.
-            const drawingModes = ['point', 'linestring', 'polygon', 'rectangle', 'circle', 'freehand'];
-            if (drawingModes.includes(mode)) {
-              log.info('[HydraulicGIS] click ignored: drawing mode =', mode);
-              return;
-            }
+            // ONLY act in select-mode. In static or drawing modes, ignore.
+            if (mode !== 'select') return;
 
-            // Hit-test all our renderable feature layers, including derived
-            // ones, so a buffer/intersection can also be selected.
-            const layers = ['td-point', 'td-linestring', 'td-polygon',
-                            'app-derived-point', 'app-derived-line', 'app-derived-fill']
+            // For terra-draw features (td-*), terra-draw's own select()
+            // already fires td.on('select'). We only need to handle the
+            // case of DERIVED features (buffer/intersection/contours)
+            // which live in app-derived-* layers — those bypass td.
+            const layers = ['app-derived-point', 'app-derived-line', 'app-derived-fill']
               .filter(id => map.getLayer(id));
-            log.info('[HydraulicGIS] click at', e.point, 'mode=', mode, 'layers=', layers);
-            if (layers.length === 0) {
-              log.warn('[HydraulicGIS] click: no hit-test layers present');
-              return;
-            }
+            if (layers.length === 0) return;
             const hits = map.queryRenderedFeatures(e.point, { layers });
-            log.info('[HydraulicGIS] click hits =', hits ? hits.length : 0);
 
-            // Resolve hits to OUR feature ids (deduplicated).
+            // Resolve hits to OUR feature ids.
             const ourIds = [];
             for (const hit of (hits || [])) {
-              // From td layers, the rendered feature.id IS the terra-draw id
-              // we stored as _terraId. From app-derived layers, the rendered
-              // feature has properties.id = our feature id.
-              const tid = hit.id;
               const propId = hit.properties && hit.properties.id;
-              const ours = state.features.find(f =>
-                (tid && f.geojson && f.geojson.properties && f.geojson.properties._terraId === tid)
-                || (propId && f.id === propId));
+              const ours = state.features.find(f => propId && f.id === propId);
               if (ours && !ourIds.includes(ours.id)) ourIds.push(ours.id);
             }
-
             if (ourIds.length === 0) {
-              // Tap on empty space → clear selection (single mode only)
+              // Tap on empty space in select-mode:
+              //   Multi OFF → clear selection.
+              //   Multi ON  → keep selection (don't surprise).
               if (!state.multiSelectMode && state.selectedIds.length > 0) {
                 state.selectedIds = [];
                 notifyUi();
-                lastTapPx = null;
               }
               return;
             }
-
-            // Cycle-through-stacked-features logic. If the user taps at
-            // (almost) the same spot as last time AND the same set of
-            // features is hit, advance the cycle index.
+            // Cycle / pick
             const curPx = [e.point.x, e.point.y];
             const samePlace = lastTapPx
               && Math.abs(lastTapPx[0] - curPx[0]) < 10
@@ -2763,22 +2766,21 @@
               lastTapCycleIdx = (lastTapCycleIdx + 1) % ourIds.length;
             }
             const pickedId = ourIds[lastTapCycleIdx];
-
             if (state.multiSelectMode) {
               const idx = state.selectedIds.indexOf(pickedId);
               if (idx === -1) {
                 state.selectedIds = [...state.selectedIds, pickedId];
-                log.info('[Tap+Multi] ADD ' + pickedId + ' → total ' + state.selectedIds.length);
+                log.info('[Derived+Multi] ADD', pickedId, 'total=' + state.selectedIds.length);
               } else {
                 state.selectedIds = state.selectedIds.filter(id => id !== pickedId);
-                log.info('[Tap+Multi] REMOVE ' + pickedId + ' → total ' + state.selectedIds.length);
+                log.info('[Derived+Multi] REMOVE', pickedId, 'total=' + state.selectedIds.length);
               }
             } else {
               state.selectedIds = [pickedId];
-              log.info('[Tap] select ' + pickedId + ' (replace)');
+              log.info('[Derived] select', pickedId);
             }
             notifyUi();
-          } catch (err) { log.warn('[HydraulicGIS] tap-select failed:', err); }
+          } catch (err) { log.warn('[HydraulicGIS] tap failed:', err); }
         });
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
@@ -2786,6 +2788,10 @@
 
       // Disable doubleClickZoom while in any draw mode — otherwise the second
       // tap of click-move rectangle/circle drawing also triggers zoom-in.
+      //
+      // Also: track when we LEAVE the select mode (user clicked the arrow
+      // button to deactivate it) — per user spec, that clears the halo.
+      let _wasInSelectMode = false;
       function syncGesturesToMode() {
         try {
           const mode = td && typeof td.getMode === 'function' ? td.getMode() : 'static';
@@ -2796,6 +2802,27 @@
               && mode !== 'rectangle' && mode !== 'circle') {
             clearFirstVertex();
           }
+          // Track select mode transitions for the selection-clearing rule.
+          const isInSelectMode = (mode === 'select');
+          if (_wasInSelectMode && !isInSelectMode) {
+            // Just LEFT select mode → clear the yellow halo entirely.
+            log.info('[HydraulicGIS] leaving select mode → clearing selection');
+            state.selectedIds = [];
+            // Also turn off Multi if it was on (so the user starts fresh
+            // the next time they enter select mode).
+            if (state.multiSelectMode) {
+              state.multiSelectMode = false;
+              const mb = document.getElementById('hgis-multi-btn');
+              if (mb) mb.classList.remove('active');
+            }
+            // Reset edit flags + edit button state so vertices don't
+            // come back next time the user enters select-mode.
+            try { setSelectEditFlags(td, false); } catch (_) {}
+            const eb = document.getElementById('hgis-edit-btn');
+            if (eb) eb.classList.remove('active');
+            notifyUi();
+          }
+          _wasInSelectMode = isInSelectMode;
         } catch (_) {}
       }
       if (typeof drawControl.on === 'function') {
