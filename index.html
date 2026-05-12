@@ -2068,8 +2068,11 @@
           if (installed) return false;
           const ctrlGroup = document.querySelector('.maplibregl-ctrl-group');
           if (!ctrlGroup) return false;
-          if (ctrlGroup.querySelector('#hgis-multi-btn')) { installed = true; return true; }
+          if (ctrlGroup.querySelector('#hgis-edit-btn')) { installed = true; return true; }
 
+          // Two custom buttons: Multi-select toggle (jaune actif) and
+          // Edit toggle. Multi-select replaces the previous long-press
+          // gesture per user request — the toggle is more discoverable.
           const multiSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
               <rect x="3" y="3" width="8" height="8" rx="1"/>
               <polyline points="5,7 7,9 9,5" stroke-width="2.4"/>
@@ -2081,7 +2084,7 @@
               <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
             </svg>`;
 
-          // ── Multi-select toggle
+          // ── Multi-select toggle (yellow when active)
           const multiBtn = document.createElement('button');
           multiBtn.id = 'hgis-multi-btn';
           multiBtn.type = 'button';
@@ -2096,6 +2099,11 @@
             state.multiSelectMode = !state.multiSelectMode;
             multiBtn.classList.toggle('active', state.multiSelectMode);
             log.info('[HydraulicGIS] multi-select toggled: ' + (state.multiSelectMode ? 'ON' : 'OFF'));
+            // IMPORTANT: when leaving multi-select mode, we KEEP the
+            // current selection. The next tap will then replace it
+            // (because state.multiSelectMode is now false). This matches
+            // the user's spec: "si je désactive multi, le prochain objet
+            // sélectionné doit être le seul en halo".
             notifyUi();
           };
 
@@ -2159,7 +2167,7 @@
           ctrlGroup.appendChild(editBtn);
 
           installed = true;
-          log.info('[HydraulicGIS] multi-select + edit toggle installed.');
+          log.info('[HydraulicGIS] multi-select + edit toggles installed.');
           return true;
         };
         // Retry until terra-draw toolbar exists in the DOM.
@@ -2669,6 +2677,9 @@
               const ours = state.features.find(f =>
                 f.geojson && f.geojson.properties && f.geojson.properties._terraId === terraId);
               if (!ours) return;
+              // Respect the same Multi-select toggle so the native
+              // "Sélectionner" button can also be used to build a
+              // multi-selection (each tap adds to the existing one).
               if (state.multiSelectMode) {
                 if (!state.selectedIds.includes(ours.id)) {
                   state.selectedIds = [...state.selectedIds, ours.id];
@@ -2677,7 +2688,7 @@
                 state.selectedIds = [ours.id];
               }
               notifyUi();
-              log.info('[HydraulicGIS] td select →', ours.id, '(multi=' + state.multiSelectMode + ', total=' + state.selectedIds.length + ')');
+              log.info('[HydraulicGIS] td select →', ours.id, '(multi=' + state.multiSelectMode + ')');
             } catch (e) { log.warn('td.on select sync failed:', e); }
           });
           td.on('deselect', () => { /* ignore — keep our halo until user clears it explicitly */ });
@@ -2690,10 +2701,21 @@
         let lastTapStackIds = [];
         let lastTapCycleIdx = 0;
 
+        // ─── Selection model: short-tap vs long-press ────────────────
+        //
+        // Tap on the map → selection.
+        //
+        // Two modes, controlled by the Multi-select toggle button:
+        //   • Multi OFF (default): tap REPLACES the selection. Tap in
+        //     empty space clears it. Successive taps at the same spot
+        //     cycle through stacked features.
+        //   • Multi ON  (button is yellow): tap ADDS/REMOVES from the
+        //     selection (toggle). Tap in empty space does nothing.
+        //
+        // This is the same logic Calques uses internally for its layer
+        // rows — borrowed directly so the behaviour is identical.
         map.on('click', (e) => {
           try {
-            // Get current terra-draw mode safely. If anything throws or
-            // returns nothing, treat it as 'static' (i.e. allow tap-select).
             let mode = 'static';
             try {
               if (td && typeof td.getMode === 'function') {
@@ -2701,54 +2723,57 @@
                 if (m) mode = m;
               }
             } catch (_) {}
-            // Only block tap-select when an active drawing mode is in use.
             const drawingModes = ['point', 'linestring', 'polygon', 'rectangle', 'circle', 'freehand'];
-            if (drawingModes.includes(mode)) {
-              log.info('[HydraulicGIS] click ignored: drawing mode =', mode);
-              return;
-            }
+            if (drawingModes.includes(mode)) return;
+            // In select-mode (Edit), terra-draw handles taps itself.
+            if (mode === 'select') return;
+            handleSelectionAt(e.point);
+          } catch (err) { log.warn('[HydraulicGIS] tap failed:', err); }
+        });
 
-            // Hit-test all our renderable feature layers, including derived
-            // ones, so a buffer/intersection can also be selected.
-            const layers = ['td-point', 'td-linestring', 'td-polygon',
-                            'app-derived-point', 'app-derived-line', 'app-derived-fill']
-              .filter(id => map.getLayer(id));
-            log.info('[HydraulicGIS] click at', e.point, 'mode=', mode, 'layers=', layers);
-            if (layers.length === 0) {
-              log.warn('[HydraulicGIS] click: no hit-test layers present');
-              return;
+        function handleSelectionAt(pt) {
+          const toggle = !!state.multiSelectMode;
+          const layers = ['td-point', 'td-linestring', 'td-polygon',
+                          'app-derived-point', 'app-derived-line', 'app-derived-fill']
+            .filter(id => map.getLayer(id));
+          if (layers.length === 0) return;
+          const hits = map.queryRenderedFeatures([pt.x, pt.y], { layers });
+          // Resolve hits to OUR feature ids (dedup, top-first).
+          const ourIds = [];
+          for (const hit of (hits || [])) {
+            const tid = hit.id;
+            const propId = hit.properties && hit.properties.id;
+            const ours = state.features.find(f =>
+              (tid && f.geojson && f.geojson.properties && f.geojson.properties._terraId === tid)
+              || (propId && f.id === propId));
+            if (ours && !ourIds.includes(ours.id)) ourIds.push(ours.id);
+          }
+          if (ourIds.length === 0) {
+            // Empty space tapped.
+            //   multi OFF → clear selection.
+            //   multi ON  → keep selection (don't surprise the user).
+            if (!toggle && state.selectedIds.length > 0) {
+              state.selectedIds = [];
+              notifyUi();
+              lastTapPx = null;
             }
-            const hits = map.queryRenderedFeatures(e.point, { layers });
-            log.info('[HydraulicGIS] click hits =', hits ? hits.length : 0);
-
-            // Resolve hits to OUR feature ids (deduplicated).
-            const ourIds = [];
-            for (const hit of (hits || [])) {
-              // From td layers, the rendered feature.id IS the terra-draw id
-              // we stored as _terraId. From app-derived layers, the rendered
-              // feature has properties.id = our feature id.
-              const tid = hit.id;
-              const propId = hit.properties && hit.properties.id;
-              const ours = state.features.find(f =>
-                (tid && f.geojson && f.geojson.properties && f.geojson.properties._terraId === tid)
-                || (propId && f.id === propId));
-              if (ours && !ourIds.includes(ours.id)) ourIds.push(ours.id);
+            return;
+          }
+          if (toggle) {
+            // Multi ON: toggle the top-most hit in/out of selection.
+            const pickedId = ourIds[0];
+            const idx = state.selectedIds.indexOf(pickedId);
+            if (idx === -1) {
+              state.selectedIds = [...state.selectedIds, pickedId];
+              log.info('[HydraulicGIS] multi ON → ADD', pickedId, 'total=' + state.selectedIds.length);
+            } else {
+              state.selectedIds = state.selectedIds.filter(id => id !== pickedId);
+              log.info('[HydraulicGIS] multi ON → REMOVE', pickedId, 'total=' + state.selectedIds.length);
             }
-
-            if (ourIds.length === 0) {
-              // Tap on empty space → clear selection (single mode only)
-              if (!state.multiSelectMode && state.selectedIds.length > 0) {
-                state.selectedIds = [];
-                notifyUi();
-                lastTapPx = null;
-              }
-              return;
-            }
-
-            // Cycle-through-stacked-features logic. If the user taps at
-            // (almost) the same spot as last time AND the same set of
-            // features is hit, advance the cycle index.
-            const curPx = [e.point.x, e.point.y];
+          } else {
+            // Multi OFF: replace selection. Successive taps at the same
+            // place cycle through stacked features.
+            const curPx = [pt.x, pt.y];
             const samePlace = lastTapPx
               && Math.abs(lastTapPx[0] - curPx[0]) < 10
               && Math.abs(lastTapPx[1] - curPx[1]) < 10
@@ -2762,19 +2787,11 @@
               lastTapCycleIdx = (lastTapCycleIdx + 1) % ourIds.length;
             }
             const pickedId = ourIds[lastTapCycleIdx];
-
-            if (state.multiSelectMode) {
-              const idx = state.selectedIds.indexOf(pickedId);
-              if (idx === -1) state.selectedIds = [...state.selectedIds, pickedId];
-              else state.selectedIds = state.selectedIds.filter(id => id !== pickedId);
-            } else {
-              state.selectedIds = [pickedId];
-            }
-            notifyUi();
-            log.info('[HydraulicGIS] tap-selected:', pickedId, 'multi=' + state.multiSelectMode,
-                     'stack=' + ourIds.length, 'cycleIdx=' + lastTapCycleIdx);
-          } catch (err) { log.warn('[HydraulicGIS] tap-select failed:', err); }
-        });
+            state.selectedIds = [pickedId];
+            log.info('[HydraulicGIS] tap → select', pickedId, '(stack=' + ourIds.length + ')');
+          }
+          notifyUi();
+        }
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
