@@ -1876,8 +1876,68 @@
             tdInst.setMode('static');
             log.info('[HydraulicGIS] terra-draw initial mode forced to static.');
           }
+          // Also: disable edit-on-select by default. Terra-draw's
+          // built-in select-mode automatically shows vertices and makes
+          // them draggable when you tap a feature. The user wants
+          // selection ≠ editing, so we patch the flags to "select-only".
+          // The Edit button (custom) re-enables them when needed.
+          try { setSelectEditFlags(tdInst, false); }
+          catch (e) { log.warn('[HydraulicGIS] could not patch select flags:', e); }
         }, 0);
       } catch (_) {}
+
+      // ─── Select-mode flag patching ────────────────────────────────────
+      // We expose two states for the select-mode flags:
+      //   • SELECT-ONLY (enabled=false): tapping a feature in select mode
+      //     just marks it selected. NO vertices, NO drag, NO midpoints.
+      //   • EDIT (enabled=true): full editing — vertices visible and
+      //     draggable, midpoints insertable, feature draggable.
+      // The original (edit-enabled) flags are captured on first call so
+      // we can restore them later.
+      let _originalSelectFlags = null;
+      function setSelectEditFlags(td, enabled) {
+        if (!td || !td._modes) return false;
+        // Find the select mode instance. The wrapper stores it under
+        // _instanceSelectMode (mode name) and the modes themselves under
+        // _modes[name].
+        const selectModeName = td._instanceSelectMode || 'select';
+        const selMode = td._modes[selectModeName];
+        if (!selMode || !selMode.flags) {
+          log.warn('[HydraulicGIS] select mode not found or has no flags');
+          return false;
+        }
+        // Capture the original (edit-enabled) flags on first call.
+        if (!_originalSelectFlags) {
+          _originalSelectFlags = JSON.parse(JSON.stringify(selMode.flags));
+        }
+        if (enabled) {
+          // Restore original flags — full editing capability.
+          selMode.flags = JSON.parse(JSON.stringify(_originalSelectFlags));
+        } else {
+          // Replace flags with a "select-only" profile: no draggable,
+          // no midpoints, no deletable coordinates. We keep the SAME
+          // mode names as keys so terra-draw's select() function finds
+          // them (otherwise it returns early in select()).
+          const noEditFlags = {};
+          for (const modeName of Object.keys(_originalSelectFlags)) {
+            noEditFlags[modeName] = {
+              feature: {
+                draggable: false,
+                rotateable: false,
+                scaleable: false,
+                coordinates: {
+                  midpoints: false,
+                  draggable: false,
+                  deletable: false,
+                },
+              },
+            };
+          }
+          selMode.flags = noEditFlags;
+        }
+        log.info('[HydraulicGIS] select-mode flags set, edit-enabled=' + enabled);
+        return true;
+      }
 
       // ─── Inject "multi-select" toggle button ─────────────────────────
       // Sits inside the terra-draw toolbar between the Select button and
@@ -2016,7 +2076,12 @@
               <rect x="13" y="13" width="8" height="8" rx="1"/>
               <polyline points="15,17 17,19 19,15" stroke-width="2.4"/>
             </svg>`;
+          const editSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
+              <path d="M12 20h9"/>
+              <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
+            </svg>`;
 
+          // ── Multi-select toggle
           const multiBtn = document.createElement('button');
           multiBtn.id = 'hgis-multi-btn';
           multiBtn.type = 'button';
@@ -2034,11 +2099,67 @@
             notifyUi();
           };
 
-          // Append at the end of the toolbar.
+          // ── Edit toggle: re-enable terra-draw's vertex editing
+          //
+          // Default state: select-mode flags are patched to "select-only"
+          // (no vertices, no drag). The Edit button restores the full
+          // edit flags AND puts terra-draw in select-mode on the
+          // currently selected feature, so vertices appear immediately.
+          const editBtn = document.createElement('button');
+          editBtn.id = 'hgis-edit-btn';
+          editBtn.type = 'button';
+          editBtn.title = 'Éditer (déplacer les sommets)';
+          editBtn.setAttribute('aria-label', 'Éditer la sélection');
+          editBtn.className = 'maplibregl-terradraw-add-control hgis-custom-btn';
+          editBtn.style.cssText = 'background-image:none; background-color:transparent;';
+          editBtn.innerHTML = editSvg;
+          editBtn.onclick = (ev) => {
+            if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+            log.info('[HydraulicGIS] edit button clicked');
+            try {
+              const td2 = drawControl.getTerraDrawInstance();
+              if (!td2) return;
+              // Toggle off if already in edit mode.
+              if (editBtn.classList.contains('active')) {
+                td2.setMode('static');
+                setSelectEditFlags(td2, false);
+                editBtn.classList.remove('active');
+                log.info('[HydraulicGIS] edit mode OFF');
+                return;
+              }
+              if (state.selectedIds.length === 0) {
+                ui.confirm('Aucune sélection',
+                  "Touchez d'abord un objet sur la carte (halo jaune), puis touchez Éditer.",
+                  () => {});
+                return;
+              }
+              // Edit only the FIRST selected feature.
+              const firstId = state.selectedIds[0];
+              const ours = state.features.find(f => f.id === firstId);
+              if (!ours || !ours.geojson.properties._terraId) {
+                ui.confirm('Édition impossible',
+                  "Cet objet ne peut pas être édité avec les sommets (il a été créé par un outil dérivé).",
+                  () => {});
+                return;
+              }
+              // Restore edit flags BEFORE setMode('select') — terra-draw
+              // reads flags in select() to decide whether to create
+              // selection points and midpoints.
+              setSelectEditFlags(td2, true);
+              td2.setMode('select');
+              try { td2.selectFeature(ours.geojson.properties._terraId); }
+              catch (e) { log.warn('selectFeature failed:', e); }
+              editBtn.classList.add('active');
+              log.info('[HydraulicGIS] edit mode ON for', firstId);
+            } catch (err) { log.warn('edit toggle failed:', err); }
+          };
+
+          // Append: multi first, then edit.
           ctrlGroup.appendChild(multiBtn);
+          ctrlGroup.appendChild(editBtn);
 
           installed = true;
-          log.info('[HydraulicGIS] multi-select toggle installed.');
+          log.info('[HydraulicGIS] multi-select + edit toggle installed.');
           return true;
         };
         // Retry until terra-draw toolbar exists in the DOM.
@@ -2533,12 +2654,33 @@
         //   - Tapping where multiple features overlap → cycles through them on
         //     successive taps (so you can reach features hidden under others).
         //
-        // The 'select' event from terra-draw still fires when the user is in
-        // edit mode; we let that pass through but don't change selectedIds
-        // because the selection there is just the editing target.
+        // The 'select' event from terra-draw fires when the user taps a
+        // feature in select-mode (native Select button). We use it to
+        // sync our state.selectedIds so the yellow halo (app-selection
+        // layer) and the panels reflect the selection.
+        // If multi-select toggle is ON, we ADD to selection rather than
+        // replace. Note: terra-draw itself can't do multi-select (the
+        // bundle's select() does deselect() before selecting), so for
+        // multi we additionally re-mark all selected features inside
+        // terra-draw via td.selectFeature in a loop.
         if (typeof td.on === 'function') {
-          td.on('select', () => { /* edit mode internal — ignore */ });
-          td.on('deselect', () => { /* edit mode internal — ignore */ });
+          td.on('select', (terraId) => {
+            try {
+              const ours = state.features.find(f =>
+                f.geojson && f.geojson.properties && f.geojson.properties._terraId === terraId);
+              if (!ours) return;
+              if (state.multiSelectMode) {
+                if (!state.selectedIds.includes(ours.id)) {
+                  state.selectedIds = [...state.selectedIds, ours.id];
+                }
+              } else {
+                state.selectedIds = [ours.id];
+              }
+              notifyUi();
+              log.info('[HydraulicGIS] td select →', ours.id, '(multi=' + state.multiSelectMode + ', total=' + state.selectedIds.length + ')');
+            } catch (e) { log.warn('td.on select sync failed:', e); }
+          });
+          td.on('deselect', () => { /* ignore — keep our halo until user clears it explicitly */ });
         }
 
         // Track the last hit position + the "cycle index" so successive taps
