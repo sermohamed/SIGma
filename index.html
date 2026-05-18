@@ -2098,50 +2098,16 @@
           if (installed) return false;
           const ctrlGroup = document.querySelector('.maplibregl-ctrl-group');
           if (!ctrlGroup) return false;
-          if (ctrlGroup.querySelector('#hgis-multi-btn')) { installed = true; return true; }
+          if (ctrlGroup.querySelector('#hgis-edit-btn')) { installed = true; return true; }
 
-          const multiSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
-              <rect x="3" y="3" width="8" height="8" rx="1"/>
-              <polyline points="5,7 7,9 9,5" stroke-width="2.4"/>
-              <rect x="13" y="13" width="8" height="8" rx="1"/>
-              <polyline points="15,17 17,19 19,15" stroke-width="2.4"/>
-            </svg>`;
           const editSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
               <path d="M12 20h9"/>
               <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
             </svg>`;
 
-          // ── Multi-select toggle
-          const multiBtn = document.createElement('button');
-          multiBtn.id = 'hgis-multi-btn';
-          multiBtn.type = 'button';
-          multiBtn.title = 'Sélection multiple (toggle)';
-          multiBtn.setAttribute('aria-label', 'Activer/désactiver la sélection multiple');
-          multiBtn.className = 'maplibregl-terradraw-add-control hgis-custom-btn';
-          multiBtn.style.cssText = 'background-image:none; background-color:transparent;';
-          multiBtn.innerHTML = multiSvg;
-          if (state.multiSelectMode) multiBtn.classList.add('active');
-          multiBtn.onclick = (ev) => {
-            if (ev) { ev.preventDefault(); ev.stopPropagation(); }
-            state.multiSelectMode = !state.multiSelectMode;
-            multiBtn.classList.toggle('active', state.multiSelectMode);
-            state.selectedIds = [];
-            try {
-              const tdInst = drawControl.getTerraDrawInstance();
-              if (tdInst && typeof tdInst.deselectFeature === 'function') {
-                tdInst.deselectFeature();
-              }
-            } catch (_) {}
-            hudLog('Multi=' + (state.multiSelectMode ? 'ON' : 'OFF') + ' selection cleared');
-            notifyUi();
-          };
-
-          // ── Edit toggle: re-enable terra-draw's vertex editing
-          //
-          // Default state: select-mode flags are patched to "select-only"
-          // (no vertices, no drag). The Edit button restores the full
-          // edit flags AND puts terra-draw in select-mode on the
-          // currently selected feature, so vertices appear immediately.
+          // Only an Edit button. Multi-select removed per user spec —
+          // in select mode every tap already toggles add/remove (see
+          // td.on("select") handler which calls toggleSelect()).
           const editBtn = document.createElement('button');
           editBtn.id = 'hgis-edit-btn';
           editBtn.type = 'button';
@@ -2152,54 +2118,41 @@
           editBtn.innerHTML = editSvg;
           editBtn.onclick = (ev) => {
             if (ev) { ev.preventDefault(); ev.stopPropagation(); }
-            log.info('[HydraulicGIS] edit button clicked');
             try {
               const td2 = drawControl.getTerraDrawInstance();
               if (!td2) return;
-              // Toggle off if already in edit mode.
               if (editBtn.classList.contains('active')) {
-                td2.setMode('static');
+                td2.setMode('select');
                 setSelectEditFlags(td2, false);
                 editBtn.classList.remove('active');
-                log.info('[HydraulicGIS] edit mode OFF');
+                hudLog('Edit OFF');
                 return;
               }
               if (state.selectedIds.length === 0) {
                 ui.confirm('Aucune sélection',
-                  "Touchez d'abord un objet sur la carte (halo jaune), puis touchez Éditer.",
-                  () => {});
+                  "Sélectionnez d'abord un objet (bouton Sélectionner + tap), puis touchez Éditer.", () => {});
                 return;
               }
-              // Edit only the FIRST selected feature.
               const firstId = state.selectedIds[0];
               const ours = state.features.find(f => f.id === firstId);
               if (!ours || !ours.geojson.properties._terraId) {
                 ui.confirm('Édition impossible',
-                  "Cet objet ne peut pas être édité avec les sommets (il a été créé par un outil dérivé).",
-                  () => {});
+                  "Cet objet dérivé (buffer/intersection) ne peut pas être édité.", () => {});
                 return;
               }
-              // Restore edit flags BEFORE setMode('select') — terra-draw
-              // reads flags in select() to decide whether to create
-              // selection points and midpoints.
               setSelectEditFlags(td2, true);
               td2.setMode('select');
-              try { td2.selectFeature(ours.geojson.properties._terraId); }
-              catch (e) { log.warn('selectFeature failed:', e); }
+              try { td2.selectFeature(ours.geojson.properties._terraId); } catch (e) {}
               editBtn.classList.add('active');
-              log.info('[HydraulicGIS] edit mode ON for', firstId);
-            } catch (err) { log.warn('edit toggle failed:', err); }
+              hudLog('Edit ON ' + firstId);
+            } catch (err) { hudLog('Edit ERR ' + err.message); }
           };
 
-          // Append: multi first, then edit.
-          ctrlGroup.appendChild(multiBtn);
           ctrlGroup.appendChild(editBtn);
-
           installed = true;
-          log.info('[HydraulicGIS] multi-select + edit toggle installed.');
+          hudLog('Edit button installed');
           return true;
         };
-        // Retry until terra-draw toolbar exists in the DOM.
         const delays = [0, 50, 150, 400, 900, 1800];
         for (const d of delays) setTimeout(tryInstall, d);
       }
@@ -2253,6 +2206,12 @@
         try { td2.setModeStyles('rectangle',  polyStyles); } catch (e) { log.warn('setModeStyles rectangle failed', e); }
         try { td2.setModeStyles('circle',     polyStyles); } catch (e) { log.warn('setModeStyles circle failed', e); }
         try { td2.setModeStyles('point',      pointStyles); } catch (e) { log.warn('setModeStyles point failed', e); }
+        // Apply the SAME styles to the select-mode so features keep
+        // their user-configured color when selected (instead of turning
+        // terra-draw's default blue #3f97e0). The yellow halo from the
+        // app-selection layer is the visual indicator of selection.
+        try { td2.setModeStyles('select', { ...lineStyles, ...polyStyles, ...pointStyles }); }
+        catch (e) { log.warn('setModeStyles select failed', e); }
         log.info('[HydraulicGIS] per-feature style resolvers installed.');
       }
       installPerFeatureStyles();
@@ -2701,28 +2660,27 @@
         // multi we additionally re-mark all selected features inside
         // terra-draw via td.selectFeature in a loop.
         if (typeof td.on === 'function') {
+          // When the user taps a feature in terra-draw's select-mode,
+          // we use toggleSelect() — the EXACT same function that the
+          // Calques panel uses. That guarantees:
+          //   • same add/remove behaviour
+          //   • same yellow halo (via syncSelectionHighlight)
+          //   • full sync: taps on the map and taps in Calques are
+          //     always consistent because they share state.selectedIds.
           td.on('select', (terraId) => {
             try {
-              hudLog('td.on(select) ' + terraId);
+              hudLog('td.select ' + terraId);
               const ours = state.features.find(f =>
-                f.geojson && f.geojson.properties && f.geojson.properties._terraId === terraId);
-              if (!ours) {
-                hudLog('  → no matching feature in state');
-                return;
-              }
-              if (state.multiSelectMode) {
-                if (!state.selectedIds.includes(ours.id)) {
-                  state.selectedIds = [...state.selectedIds, ours.id];
-                }
-                hudLog('  → ADD ' + ours.id + ' total=' + state.selectedIds.length);
-              } else {
-                state.selectedIds = [ours.id];
-                hudLog('  → SET ' + ours.id);
-              }
-              notifyUi();
+                f.geojson && f.geojson.properties &&
+                f.geojson.properties._terraId === terraId);
+              if (!ours) { hudLog('  → not found in state'); return; }
+              // toggleSelect adds if absent, removes if present — same
+              // as checking a checkbox in the Calques panel.
+              toggleSelect(ours.id);
+              hudLog('  → sel=[' + state.selectedIds.join(',') + ']');
             } catch (e) { hudLog('  ERR ' + e.message); }
           });
-          td.on('deselect', () => { /* ignore — keep our halo until user clears it explicitly */ });
+          td.on('deselect', () => { /* ignore — halo controlled by us */ });
         }
 
         // Track the last hit position + the "cycle index" so successive taps
@@ -2839,16 +2797,12 @@
             hudLog('mode: ' + (isInSelectMode ? '→ select' : '← left select'));
           }
           if (_wasInSelectMode && !isInSelectMode) {
+            // Left select mode → clear all selections and reset Edit button.
             state.selectedIds = [];
-            if (state.multiSelectMode) {
-              state.multiSelectMode = false;
-              const mb = document.getElementById('hgis-multi-btn');
-              if (mb) mb.classList.remove('active');
-            }
             try { setSelectEditFlags(td, false); } catch (_) {}
             const eb = document.getElementById('hgis-edit-btn');
             if (eb) eb.classList.remove('active');
-            hudLog('  → cleared selection + Multi/Edit OFF');
+            hudLog('left select → cleared');
             notifyUi();
           }
           _wasInSelectMode = isInSelectMode;
