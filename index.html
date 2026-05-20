@@ -825,7 +825,7 @@
       <!-- Diagnostic HUD: real-time view of terra-draw state. Helpful for
            verifying that taps register on mobile. Toggle with ?debug=1 or
            via the debug button (added below). -->
-      <div id="td-hud" class="float-card" style="display:block;">
+      <div id="td-hud" class="float-card" style="display:none;">
         <div style="font-weight:600; font-size:11px; color:var(--ink-1); margin-bottom:4px; display:flex; justify-content:space-between; align-items:center; gap:8px;">
           <span>Diagnostic</span>
           <button onclick="document.getElementById('td-hud').style.display='none'" style="background:transparent; border:none; color:var(--ink-2); cursor:pointer; padding:0; font-size:14px;">×</button>
@@ -958,8 +958,11 @@
     document.addEventListener('touchend', (e) => {
       const now = Date.now();
       if (now - lastTouchEnd <= 350) {
-        // Double-tap: prevent zoom but only if NOT on the map (map handles its own)
-        if (!(e.target && e.target.closest && e.target.closest('#map'))) {
+        // Double-tap: prevent zoom but only if NOT on the map or inside a modal
+        const target = e.target;
+        const inMap = target && target.closest && target.closest('#map');
+        const inModal = target && target.closest && (target.closest('#confirm-bg') || target.closest('#prompt-bg'));
+        if (!inMap && !inModal) {
           e.preventDefault();
         }
       }
@@ -1144,6 +1147,11 @@
     try {
       if (typeof syncSelectionHighlight === 'function') syncSelectionHighlight();
     } catch (_) {}
+    // Also sync visibility/map state so toggling eye icon or selecting from
+    // calques triggers an immediate map repaint.
+    try {
+      if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap();
+    } catch (_) {}
   }
   // Lightweight wrapper that just refreshes the selection highlight source.
   // We keep it separate from syncFeaturesToMap so a selection change doesn't
@@ -1163,6 +1171,7 @@
       });
       if (typeof hudLog === 'function') hudLog('halo: ' + selFeatures.length + ' feat');
       // Keep the halo above td-* in case a redraw moved it.
+      if (map.getLayer('app-selection-fill')) map.moveLayer('app-selection-fill');
       if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
       if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
       if (map.getLayer('app-label')) map.moveLayer('app-label');
@@ -1548,7 +1557,7 @@
     // Clean partial state.
     if (map.getLayer('app-label')) { try { map.removeLayer('app-label'); } catch (_) {} }
     if (map.getSource(SRC_LABELS)) { try { map.removeSource(SRC_LABELS); } catch (_) {} }
-    for (const id of ['app-selection-line', 'app-selection-fill', 'app-selection-point']) {
+    for (const id of ['app-selection-line', 'app-selection-fill', 'app-selection-point', 'app-selection-poly-fill']) {
       if (map.getLayer(id)) { try { map.removeLayer(id); } catch (_) {} }
     }
     if (map.getSource('app-selection')) { try { map.removeSource('app-selection'); } catch (_) {} }
@@ -1572,6 +1581,15 @@
         'circle-stroke-width': 3,
       },
     });
+    // Selection halo fill for polygons (semi-transparent yellow overlay).
+    map.addLayer({
+      id: 'app-selection-fill', type: 'fill', source: 'app-selection',
+      filter: ['==', ['geometry-type'], 'Polygon'],
+      paint: {
+        'fill-color': '#fbc412',
+        'fill-opacity': 0.18,
+      },
+    });
     // Selection halo for lines / polygon outlines.
     map.addLayer({
       id: 'app-selection-line', type: 'line', source: 'app-selection',
@@ -1591,7 +1609,7 @@
       id: 'app-label', type: 'symbol', source: SRC_LABELS,
       layout: {
         'text-field': ['get', 'name'],
-        'text-font': ['Noto Sans Regular'],
+        'text-font': ['Noto Sans Bold', 'Noto Sans Regular', 'Open Sans Bold', 'Arial Unicode MS Regular'],
         'text-size': 12,
         // Minimal offset: label sits very close to the geometry centroid.
         'text-offset': [0, 0.6],
@@ -1717,6 +1735,7 @@
       if (map.getLayer('app-derived-line')) map.moveLayer('app-derived-line');
       if (map.getLayer('app-derived-point')) map.moveLayer('app-derived-point');
       if (map.getLayer('app-contours-line')) map.moveLayer('app-contours-line');
+      if (map.getLayer('app-selection-fill')) map.moveLayer('app-selection-fill');
       if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
       if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
       if (map.getLayer('app-label')) map.moveLayer('app-label');
@@ -2980,8 +2999,16 @@
         else if (e.key === 'Escape') { this.closePrompt(); }
       };
       document.getElementById('prompt-bg').classList.add('visible');
-      // Defer focus + select-all so iOS shows the keyboard
-      setTimeout(() => { input.focus(); input.select(); }, 50);
+      // Defer focus + select-all so iOS shows the keyboard.
+      // On iOS Safari, keyboard only opens from a direct user-gesture handler.
+      // We use a short chain: make visible first, then focus with slight delay.
+      setTimeout(() => {
+        try {
+          input.focus();
+          input.select();
+          input.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        } catch (_) {}
+      }, 80);
     },
     closePrompt() {
       document.getElementById('prompt-bg').classList.remove('visible');
@@ -4118,9 +4145,7 @@
           id: 'app-contour-labels-symbol', type: 'symbol', source: 'app-contour-labels',
           layout: {
             'text-field': ['concat', ['to-string', ['round', ['get', 'elevation']]], ' m'],
-            'text-font': ['Noto Sans Regular'],
-            'text-size': 10,
-            'text-allow-overlap': false,
+            'text-font': ['Noto Sans Bold', 'Noto Sans Regular', 'Open Sans Bold', 'Arial Unicode MS Regular'],
             'text-padding': 2,
           },
           paint: {
