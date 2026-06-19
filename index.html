@@ -832,7 +832,7 @@
         </div>
         <div style="font-family:'JetBrains Mono',ui-monospace,monospace; font-size:10px; line-height:1.5; color:var(--ink-0);">
           <div>Mode: <b id="hud-mode">—</b></div>
-          <div>Sél: <b id="hud-sel">0</b> | Multi: <b id="hud-multi">OFF</b></div>
+          <div>Sél: <b id="hud-sel">0</b></div>
           <div>Dernier event: <b id="hud-event">—</b></div>
           <div id="hud-log" style="margin-top:4px; max-height:80px; overflow-y:auto; font-size:9px; color:var(--ink-1); border-top:1px solid var(--line); padding-top:4px;"></div>
         </div>
@@ -1104,7 +1104,6 @@
   const state = {
     features: [],         // tableau d'objets MapFeature
     selectedIds: [],
-    multiSelectMode: false,  // when true, taps add to selection instead of replacing it
     activePanel: null,
     basemap: 'satellite',  // default: satellite view with city/road labels
     listeners: { features: [], ui: [] },
@@ -1170,11 +1169,7 @@
         type: 'FeatureCollection', features: selFeatures
       });
       if (typeof hudLog === 'function') hudLog('halo: ' + selFeatures.length + ' feat');
-      // Keep the halo above td-* in case a redraw moved it.
-      if (map.getLayer('app-selection-fill')) map.moveLayer('app-selection-fill');
-      if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
-      if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
-      if (map.getLayer('app-label')) map.moveLayer('app-label');
+      ensureOverlayLayerOrder();
     } catch (_) {}
   }
   function onFeatures(fn) { state.listeners.features.push(fn); }
@@ -1383,6 +1378,46 @@
     notifyUi();
   }
 
+  function selectFeature(id, options = {}) {
+    const additive = options.additive === true;
+    if (additive) {
+      if (state.selectedIds.includes(id)) {
+        state.selectedIds = state.selectedIds.filter(x => x !== id);
+      } else {
+        state.selectedIds = [...state.selectedIds, id];
+      }
+    } else {
+      state.selectedIds = [id];
+    }
+    notifyUi();
+  }
+
+  const PICK_LAYERS = [
+    'td-point', 'td-linestring', 'td-polygon', 'td-polygon-outline',
+    'app-derived-point', 'app-derived-line', 'app-derived-fill',
+  ];
+
+  function pickFeatureAtPoint(point) {
+    const layers = PICK_LAYERS.filter(id => map.getLayer(id));
+    if (!layers.length) return [];
+    const hits = map.queryRenderedFeatures(point, { layers });
+    const ourIds = [];
+    for (const hit of (hits || [])) {
+      let ourId = null;
+      const propId = hit.properties && hit.properties.id;
+      if (propId && state.features.some(f => f.id === propId)) {
+        ourId = propId;
+      } else if (hit.id != null) {
+        const ours = state.features.find(f =>
+          f.geojson && f.geojson.properties &&
+          f.geojson.properties._terraId === hit.id);
+        if (ours) ourId = ours.id;
+      }
+      if (ourId && !ourIds.includes(ourId)) ourIds.push(ourId);
+    }
+    return ourIds;
+  }
+
   /* ═══ 5. MAP & DRAWING ══════════════════════════════════════════════════════ */
   const BASEMAPS = {
     dark: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
@@ -1512,6 +1547,7 @@
       installAppLayers();
       syncFeaturesToMap();
       updateGrid();
+      ensureOverlayLayerOrder();
     } catch (err) { log.error('[HydraulicGIS] restore failed:', err); }
   }, false);
 
@@ -1635,6 +1671,7 @@
         'text-halo-blur': 0.5,
       },
     });
+    updateLabelLayout();
   }
 
   function polyCentroid(f) {
@@ -1644,6 +1681,41 @@
     let x = 0, y = 0;
     for (const [lng, lat] of ring) { x += lng; y += lat; }
     return [x / ring.length, y / ring.length];
+  }
+
+  function updateLabelLayout() {
+    try {
+      if (!map.getLayer('app-label')) return;
+      const mobile = ui.isMobile();
+      map.setLayoutProperty('app-label', 'text-size', mobile ? 14 : 12);
+      map.setLayoutProperty('app-label', 'text-offset', mobile ? [0, 0.8] : [0, 0.6]);
+    } catch (_) {}
+  }
+
+  function ensureOverlayLayerOrder() {
+    try {
+      if (map.getLayer('app-derived-fill')) map.moveLayer('app-derived-fill');
+      if (map.getLayer('app-derived-outline')) map.moveLayer('app-derived-outline');
+      if (map.getLayer('app-derived-line')) map.moveLayer('app-derived-line');
+      if (map.getLayer('app-derived-point')) map.moveLayer('app-derived-point');
+      if (map.getLayer('app-contours-line')) map.moveLayer('app-contours-line');
+      if (map.getLayer('_hgis_first_vertex_layer')) map.moveLayer('_hgis_first_vertex_layer');
+      if (map.getLayer('app-selection-fill')) map.moveLayer('app-selection-fill');
+      if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
+      if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
+      if (map.getLayer('app-label')) map.moveLayer('app-label');
+      updateLabelLayout();
+    } catch (_) {}
+  }
+
+  let _overlayOrderRaf = false;
+  function scheduleOverlayLayerOrder() {
+    if (_overlayOrderRaf) return;
+    _overlayOrderRaf = true;
+    requestAnimationFrame(() => {
+      _overlayOrderRaf = false;
+      ensureOverlayLayerOrder();
+    });
   }
 
   function syncFeaturesToMap() {
@@ -1723,23 +1795,7 @@
       log.warn('[HydraulicGIS] selection setData failed:', err);
     }
 
-    // Critical: re-raise app-label and selection layers ABOVE all terra-draw
-    // layers (td-*) every time we sync. terra-draw lazily creates td-point /
-    // td-linestring / td-polygon when the user draws, and they get added at
-    // the TOP of the layer stack — covering our overlays.
-    try {
-      // Order (bottom to top): td-* (terra-draw), then derived shapes,
-      // then selection halo, then labels.
-      if (map.getLayer('app-derived-fill')) map.moveLayer('app-derived-fill');
-      if (map.getLayer('app-derived-outline')) map.moveLayer('app-derived-outline');
-      if (map.getLayer('app-derived-line')) map.moveLayer('app-derived-line');
-      if (map.getLayer('app-derived-point')) map.moveLayer('app-derived-point');
-      if (map.getLayer('app-contours-line')) map.moveLayer('app-contours-line');
-      if (map.getLayer('app-selection-fill')) map.moveLayer('app-selection-fill');
-      if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
-      if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
-      if (map.getLayer('app-label')) map.moveLayer('app-label');
-    } catch (_) {}
+    ensureOverlayLayerOrder();
 
     // Re-sync derived features (buffers, intersections) so visibility
     // toggles in Calques affect them too.
@@ -1776,6 +1832,8 @@
     try { map.triggerRepaint(); } catch (_) {}
   }
 
+  map.on('styledata', scheduleOverlayLayerOrder);
+
   // ─── Diagnostic HUD ───
   // Activates on URL param ?debug=1 OR by typing 'D' three times in a row.
   // Lets us see if terra-draw is registering taps when the visual rendering
@@ -1807,14 +1865,13 @@
       while (logEl.children.length > 30) logEl.removeChild(logEl.firstChild);
       // Also update the live counters
       const selEl = document.getElementById('hud-sel');
-      const multiEl = document.getElementById('hud-multi');
       if (selEl && typeof state !== 'undefined') selEl.textContent = state.selectedIds.length;
-      if (multiEl && typeof state !== 'undefined') multiEl.textContent = state.multiSelectMode ? 'ON' : 'OFF';
     } catch (_) {}
   }
   function updateHud(eventLabel) {
-    if (!isDebugMode && !document.getElementById('td-hud') ||
-        document.getElementById('td-hud').style.display === 'none') return;
+    const hud = document.getElementById('td-hud');
+    if (!hud) return;
+    if (!isDebugMode && hud.style.display === 'none') return;
     try {
       const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
       const mode = td && typeof td.getMode === 'function' ? td.getMode() : '—';
@@ -1915,7 +1972,7 @@
       // Force terra-draw into 'static' mode at startup. The wrapper may
       // pre-select a mode (often 'select') which would intercept the
       // user's first tap. Static = idle, no mode active, taps reach our
-      // map.on('click') tap-select handler.
+      // pointerup tap-select handler.
       // Patch terra-draw's select-mode flags with a few retries to be
       // sure the mode is fully constructed by the time we touch it.
       let _flagsPatched = false;
@@ -2124,9 +2181,8 @@
               <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
             </svg>`;
 
-          // Only an Edit button. Multi-select removed per user spec —
-          // in select mode every tap already toggles add/remove (see
-          // td.on("select") handler which calls toggleSelect()).
+          // Only an Edit button. Taps on the map select features directly
+          // (see pointerup tap-select handler).
           const editBtn = document.createElement('button');
           editBtn.id = 'hgis-edit-btn';
           editBtn.type = 'button';
@@ -2516,6 +2572,7 @@
           // Re-apply vertex size boost on every change — td-point may have
           // just been created by terra-draw's lazy layer-add.
           boostTerraDrawPointSize();
+          ensureOverlayLayerOrder();
 
           // ── Mobile first-vertex overlay logic ──
           // Inspect terra-draw's snapshot. If a degenerate (zero-size)
@@ -2602,7 +2659,7 @@
             } catch (_) {}
             try { map.triggerRepaint(); } catch (_) {}
             // CRITICAL: reset to 'static' so the NEXT map tap goes through
-            // our map.on('click') handler (which does tap-select). Without
+            // our pointerup tap-select handler. Without this, terra-draw
             // this, terra-draw stays in its draw mode and intercepts taps
             // as new vertices instead of letting us select.
             try {
@@ -2653,39 +2710,11 @@
           }
         });
 
-        // ─── Auto-select our store row when user picks on the map ────────
-        // Two paths: (a) terra-draw 'select' event (when in Select mode and
-        // user taps a feature) and (b) a regular map click that hit-tests
-        // the td-* layers (so the user gets selection even outside Select
-        // mode). Both update state.selectedIds so the Style/Measure/etc.
-        // panels become useful immediately without a detour through the
-        // Calques panel.
         // ─── Selection model ─────────────────────────────────────────
-        // Per user spec:
-        //   - Tap on a feature on the map → select (halo only, no edit).
-        //   - Multi-select toggle ON → tap adds/removes from selection.
-        //   - Edit button → terra-draw enters select mode for ONE selected feature.
-        //   - Delete button → removes all selectedIds.
-        //   - Tapping where multiple features overlap → cycles through them on
-        //     successive taps (so you can reach features hidden under others).
-        //
-        // The 'select' event from terra-draw fires when the user taps a
-        // feature in select-mode (native Select button). We use it to
-        // sync our state.selectedIds so the yellow halo (app-selection
-        // layer) and the panels reflect the selection.
-        // If multi-select toggle is ON, we ADD to selection rather than
-        // replace. Note: terra-draw itself can't do multi-select (the
-        // bundle's select() does deselect() before selecting), so for
-        // multi we additionally re-mark all selected features inside
-        // terra-draw via td.selectFeature in a loop.
+        // Tap on a feature (static or select mode) → select (halo only).
+        // Edit button → terra-draw enters select mode for ONE selected feature.
+        // Tapping where multiple features overlap → cycles through them.
         if (typeof td.on === 'function') {
-          // When the user taps a feature in terra-draw's select-mode,
-          // we use toggleSelect() — the EXACT same function that the
-          // Calques panel uses. That guarantees:
-          //   • same add/remove behaviour
-          //   • same yellow halo (via syncSelectionHighlight)
-          //   • full sync: taps on the map and taps in Calques are
-          //     always consistent because they share state.selectedIds.
           td.on('select', (terraId) => {
             try {
               hudLog('td.select ' + terraId);
@@ -2693,9 +2722,7 @@
                 f.geojson && f.geojson.properties &&
                 f.geojson.properties._terraId === terraId);
               if (!ours) { hudLog('  → not found in state'); return; }
-              // toggleSelect adds if absent, removes if present — same
-              // as checking a checkbox in the Calques panel.
-              toggleSelect(ours.id);
+              selectFeature(ours.id, { additive: false });
               hudLog('  → sel=[' + state.selectedIds.join(',') + ']');
             } catch (e) { hudLog('  ERR ' + e.message); }
           });
@@ -2703,93 +2730,74 @@
         }
 
         // Track the last hit position + the "cycle index" so successive taps
-        // at the SAME point cycle through stacked features. We reset the
-        // cycle when the user taps a different location (>10 px away).
+        // at the SAME point cycle through stacked features.
         let lastTapPx = null;
         let lastTapStackIds = [];
         let lastTapCycleIdx = 0;
 
-        // ─── Tap-to-select (only in select-mode) ────────────────────────
-        //
-        // Per user spec, the SELECT mode (toggled by the arrow button) is
-        // the gate for selection:
-        //   • Mode is NOT 'select' (static, or drawing) → tap does nothing.
-        //   • Mode IS 'select', Multi OFF → tap = replace selection.
-        //   • Mode IS 'select', Multi ON  → tap = toggle in/out of selection.
-        //
-        // We piggyback on terra-draw's own pointer event in select-mode
-        // (which fires 'select' with the terra-draw feature id). Our
-        // map.on('click') is the fallback for derived features (which
-        // terra-draw doesn't know about — buffers, intersections, contours).
-        map.on('click', (e) => {
+        // ─── Unified tap-to-select (static + select modes) ─────────────
+        const TAP_MOVE_THRESHOLD = 8;
+        let _tapDown = null;
+
+        function isDrawMode(mode) {
+          return mode && mode !== 'static' && mode !== 'select';
+        }
+
+        function handleMapTap(point) {
+          if (typeof pickModeOff !== 'undefined' && pickModeOff) return;
+          let mode = 'static';
           try {
-            let mode = 'static';
-            try {
-              if (td && typeof td.getMode === 'function') {
-                const m = td.getMode();
-                if (m) mode = m;
-              }
-            } catch (_) {}
-            // ONLY act in select-mode. In static or drawing modes, ignore.
-            if (mode !== 'select') return;
+            if (td && typeof td.getMode === 'function') {
+              const m = td.getMode();
+              if (m) mode = m;
+            }
+          } catch (_) {}
+          if (isDrawMode(mode)) return;
 
-            // For terra-draw features (td-*), terra-draw's own select()
-            // already fires td.on('select'). We only need to handle the
-            // case of DERIVED features (buffer/intersection/contours)
-            // which live in app-derived-* layers — those bypass td.
-            const layers = ['app-derived-point', 'app-derived-line', 'app-derived-fill']
-              .filter(id => map.getLayer(id));
-            if (layers.length === 0) return;
-            const hits = map.queryRenderedFeatures(e.point, { layers });
+          const ourIds = pickFeatureAtPoint(point);
+          if (ourIds.length === 0) {
+            if (state.selectedIds.length > 0) {
+              state.selectedIds = [];
+              notifyUi();
+            }
+            return;
+          }
 
-            // Resolve hits to OUR feature ids.
-            const ourIds = [];
-            for (const hit of (hits || [])) {
-              const propId = hit.properties && hit.properties.id;
-              const ours = state.features.find(f => propId && f.id === propId);
-              if (ours && !ourIds.includes(ours.id)) ourIds.push(ours.id);
-            }
-            if (ourIds.length === 0) {
-              // Tap on empty space in select-mode:
-              //   Multi OFF → clear selection.
-              //   Multi ON  → keep selection (don't surprise).
-              if (!state.multiSelectMode && state.selectedIds.length > 0) {
-                state.selectedIds = [];
-                notifyUi();
-              }
-              return;
-            }
-            // Cycle / pick
-            const curPx = [e.point.x, e.point.y];
-            const samePlace = lastTapPx
-              && Math.abs(lastTapPx[0] - curPx[0]) < 10
-              && Math.abs(lastTapPx[1] - curPx[1]) < 10
-              && lastTapStackIds.length === ourIds.length
-              && lastTapStackIds.every((id, i) => id === ourIds[i]);
-            if (!samePlace) {
-              lastTapPx = curPx;
-              lastTapStackIds = ourIds.slice();
-              lastTapCycleIdx = 0;
-            } else {
-              lastTapCycleIdx = (lastTapCycleIdx + 1) % ourIds.length;
-            }
-            const pickedId = ourIds[lastTapCycleIdx];
-            if (state.multiSelectMode) {
-              const idx = state.selectedIds.indexOf(pickedId);
-              if (idx === -1) {
-                state.selectedIds = [...state.selectedIds, pickedId];
-                log.info('[Derived+Multi] ADD', pickedId, 'total=' + state.selectedIds.length);
-              } else {
-                state.selectedIds = state.selectedIds.filter(id => id !== pickedId);
-                log.info('[Derived+Multi] REMOVE', pickedId, 'total=' + state.selectedIds.length);
-              }
-            } else {
-              state.selectedIds = [pickedId];
-              log.info('[Derived] select', pickedId);
-            }
-            notifyUi();
+          const curPx = [point.x, point.y];
+          const samePlace = lastTapPx
+            && Math.abs(lastTapPx[0] - curPx[0]) < 10
+            && Math.abs(lastTapPx[1] - curPx[1]) < 10
+            && lastTapStackIds.length === ourIds.length
+            && lastTapStackIds.every((id, i) => id === ourIds[i]);
+          if (!samePlace) {
+            lastTapPx = curPx;
+            lastTapStackIds = ourIds.slice();
+            lastTapCycleIdx = 0;
+          } else {
+            lastTapCycleIdx = (lastTapCycleIdx + 1) % ourIds.length;
+          }
+          const pickedId = ourIds[lastTapCycleIdx];
+          selectFeature(pickedId, { additive: false });
+          hudLog('tap-select ' + pickedId);
+        }
+
+        mapCanvas.addEventListener('pointerdown', (ev) => {
+          if (!ev.isPrimary) return;
+          _tapDown = { x: ev.clientX, y: ev.clientY };
+        }, true);
+
+        mapCanvas.addEventListener('pointerup', (ev) => {
+          if (!ev.isPrimary || !_tapDown) return;
+          const dx = ev.clientX - _tapDown.x;
+          const dy = ev.clientY - _tapDown.y;
+          _tapDown = null;
+          if (Math.sqrt(dx * dx + dy * dy) > TAP_MOVE_THRESHOLD) return;
+          try {
+            const rect = mapCanvas.getBoundingClientRect();
+            const point = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
+            handleMapTap(point);
           } catch (err) { log.warn('[HydraulicGIS] tap failed:', err); }
-        });
+        }, true);
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
@@ -2797,8 +2805,8 @@
       // Disable doubleClickZoom while in any draw mode — otherwise the second
       // tap of click-move rectangle/circle drawing also triggers zoom-in.
       //
-      // Also: track when we LEAVE the select mode (user clicked the arrow
-      // button to deactivate it) — per user spec, that clears the halo.
+      // Also: track when we LEAVE the select mode — reset Edit button only;
+      // selection halo persists until Escape or empty-map tap.
       let _wasInSelectMode = false;
       function syncGesturesToMode() {
         try {
@@ -2810,19 +2818,15 @@
               && mode !== 'rectangle' && mode !== 'circle') {
             clearFirstVertex();
           }
-          // Track select mode transitions for the selection-clearing rule.
           const isInSelectMode = (mode === 'select');
           if (_wasInSelectMode !== isInSelectMode) {
             hudLog('mode: ' + (isInSelectMode ? '→ select' : '← left select'));
           }
           if (_wasInSelectMode && !isInSelectMode) {
-            // Left select mode → clear all selections and reset Edit button.
-            state.selectedIds = [];
             try { setSelectEditFlags(td, false); } catch (_) {}
             const eb = document.getElementById('hgis-edit-btn');
             if (eb) eb.classList.remove('active');
-            hudLog('left select → cleared');
-            notifyUi();
+            hudLog('left select → edit off');
           }
           _wasInSelectMode = isInSelectMode;
         } catch (_) {}
@@ -3331,7 +3335,15 @@
       root.querySelector('#st-opacity-val').textContent = Math.round(v * 100) + '%';
     });
     root.querySelector('#st-label')?.addEventListener('change', e => {
-      apply({ showLabel: e.target.checked });
+      const v = e.target.checked;
+      state.selectedIds.forEach(id => {
+        const f = state.features.find(x => x.id === id);
+        if (f) {
+          f.style = { ...f.style, showLabel: v };
+          f.updatedAt = Date.now();
+        }
+      });
+      notifyFeatures();
     });
   }
 
@@ -5402,6 +5414,9 @@
       } else if (state.activePanel) {
         if (ui.isMobile()) ui.closeSheet();
         else ui.setPanel(null);
+      } else if (state.selectedIds.length > 0) {
+        state.selectedIds = [];
+        notifyUi();
       }
     } else if (e.key === 'Delete' || e.key === 'Backspace') {
       // Delete selected features
