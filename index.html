@@ -383,7 +383,8 @@
       border-top: 1px solid var(--line);
       border-radius: 20px 20px 0 0;
       box-shadow: 0 -16px 40px -8px rgba(0,0,0,0.55);
-      max-height: 80dvh;
+      max-height: 45dvh;
+      height: auto;
       transform: translateY(100%);
       transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1);
       display: flex; flex-direction: column;
@@ -408,9 +409,12 @@
     .sheet-header h2 { margin: 0; font-size: 16px; font-weight: 600; }
 
     .sheet-body {
-      flex: 1; min-height: 0;
+      flex: 0 1 auto;
+      max-height: calc(45dvh - 64px);
+      min-height: 0;
       overflow-y: auto; overscroll-behavior: contain;
       padding: 0 16px 16px;
+      -webkit-overflow-scrolling: touch;
     }
 
     /* ═════ PRIMITIVES ═════ */
@@ -467,32 +471,29 @@
     .stack > * + * { margin-top: 12px; }
     .stack-tight > * + * { margin-top: 8px; }
 
-    /* ═════ MENU SHEET ═════ */
-    /* Per user spec: compact items + cap visible height at ~5 entries so
-       the menu doesn't cover the whole screen on mobile. The list scrolls
-       vertically if there are more. */
+    /* Outils menu: compact sheet height, full-size rows, scroll for overflow. */
     .menu-list {
-      display: flex; flex-direction: column; gap: 4px;
-      max-height: 320px;   /* ~5 items of 56px + gaps */
+      display: flex; flex-direction: column; gap: 6px;
       overflow-y: auto;
-      padding-right: 4px;  /* room for scrollbar */
+      padding-right: 4px;
       -webkit-overflow-scrolling: touch;
     }
     .menu-item {
-      display: flex; align-items: center; gap: 10px;
-      padding: 9px 12px;    /* was 14px */
-      min-height: 0;
+      display: flex; align-items: center; gap: 12px;
+      padding: 12px 14px;
+      min-height: 44px;
       background: var(--bg-2);
       border: 1px solid var(--line); border-radius: 6px;
       cursor: pointer;
       color: var(--ink-0); text-align: left;
-      font-size: 13px;       /* was implicit 14/15px */
-      line-height: 1.2;
+      font-size: 14px;
+      line-height: 1.25;
       transition: background 0.15s;
+      flex-shrink: 0;
     }
     .menu-item:hover { background: var(--bg-3); }
     .menu-item .icon { color: var(--brand); flex-shrink: 0; }
-    .menu-item .icon svg { width: 18px; height: 18px; }    /* was 22 */
+    .menu-item .icon svg { width: 22px; height: 22px; }
 
     /* ═════ LAYERS LIST ═════ */
     .layer-row {
@@ -758,7 +759,7 @@
           <svg viewBox="0 0 24 24" fill="none"><path d="M16 4l4 4L8 20l-4-4L16 4z M14 6l2 2 M11 9l2 2 M8 12l2 2" stroke="currentColor" stroke-width="2" stroke-linejoin="round"/></svg>
           <span class="lbl">Mesure</span>
         </button>
-        <button class="rail-btn" data-panel="coordinates" title="Coordonnées">
+        <button class="rail-btn" data-panel="coordinates" title="Convertir coordonnées">
           <svg viewBox="0 0 24 24" fill="none"><circle cx="12" cy="10" r="3" stroke="currentColor" stroke-width="2"/><path d="M12 2C7 2 4 5.5 4 10c0 5.5 8 12 8 12s8-6.5 8-12c0-4.5-3-8-8-8z" stroke="currentColor" stroke-width="2"/></svg>
           <span class="lbl">Coord.</span>
         </button>
@@ -1197,6 +1198,18 @@
       td.selectFeature(terraId);
     } catch (_) {}
   }
+
+  // Terra-draw paints its own blue selection overlay. We only want the
+  // yellow app-selection halo except during vertex editing (Edit button).
+  let _terraEditActive = false;
+  function clearTerraDrawNativeSelection() {
+    if (_terraEditActive) return;
+    try {
+      const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
+      if (!td) return;
+      if (typeof td.deselect === 'function') td.deselect();
+    } catch (_) {}
+  }
   function onFeatures(fn) { state.listeners.features.push(fn); }
   function onUi(fn) { state.listeners.ui.push(fn); }
 
@@ -1398,6 +1411,7 @@
   let refreshTerraDrawStyles = function () {
     try { map.triggerRepaint(); } catch (_) {}
   };
+  let installPerFeatureStyles = null;
 
   function toggleVisibility(id) {
     const f = state.features.find(x => x.id === id);
@@ -1429,7 +1443,13 @@
     }
     const ours = state.features.find(f => f.id === id);
     if (ours && ours.geojson && ours.geojson.properties && ours.geojson.properties._terraId) {
-      syncTerraDrawInternalSelect(ours.geojson.properties._terraId);
+      if (_terraEditActive) {
+        syncTerraDrawInternalSelect(ours.geojson.properties._terraId);
+      } else {
+        clearTerraDrawNativeSelection();
+      }
+    } else {
+      clearTerraDrawNativeSelection();
     }
     notifyUi();
   }
@@ -1685,7 +1705,7 @@
       id: 'app-label', type: 'symbol', source: SRC_LABELS,
       layout: {
         'text-field': ['get', 'name'],
-        'text-font': ['Noto Sans Bold', 'Noto Sans Regular', 'Open Sans Bold', 'Arial Unicode MS Regular'],
+        'text-font': ['Open Sans Bold', 'Open Sans Regular', 'Arial Unicode MS Bold'],
         'text-size': 12,
         // Minimal offset: label sits very close to the geometry centroid.
         'text-offset': [0, 0.6],
@@ -1817,6 +1837,8 @@
 
     try {
       map.getSource(SRC_LABELS).setData({ type: 'FeatureCollection', features: labels });
+      ensureOverlayLayerOrder();
+      map.triggerRepaint();
     } catch (err) {
       log.warn('[HydraulicGIS] label setData failed:', err);
     }
@@ -2239,7 +2261,9 @@
               if (editBtn.classList.contains('active')) {
                 td2.setMode('static');
                 setSelectEditFlags(td2, false);
+                _terraEditActive = false;
                 editBtn.classList.remove('active');
+                clearTerraDrawNativeSelection();
                 hudLog('Edit OFF');
                 return;
               }
@@ -2256,6 +2280,7 @@
                 return;
               }
               setSelectEditFlags(td2, true);
+              _terraEditActive = true;
               td2.setMode('select');
               try { td2.selectFeature(ours.geojson.properties._terraId); } catch (e) {}
               editBtn.classList.add('active');
@@ -2282,13 +2307,14 @@
       // Features without a matching store entry (e.g. mid-draw) fall back
       // to the default blue. This is what makes the Style panel actually
       // affect rendering.
-      function installPerFeatureStyles() {
+      installPerFeatureStyles = function () {
         const td2 = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
         if (!td2 || typeof td2.setModeStyles !== 'function') return;
         const ourFeatureForTerraId = (terraId) => {
           if (!terraId) return null;
           for (const f of state.features) {
-            if (f.geojson && f.geojson.properties && f.geojson.properties._terraId === terraId) {
+            if (f.geojson && f.geojson.properties &&
+                terraIdMatch(f.geojson.properties._terraId, terraId)) {
               return f;
             }
           }
@@ -2327,19 +2353,23 @@
         // app-selection layer is the visual indicator of selection.
         try { td2.setModeStyles('select', { ...lineStyles, ...polyStyles, ...pointStyles }); }
         catch (e) { log.warn('setModeStyles select failed', e); }
+        try { td2.setModeStyles('static', { ...lineStyles, ...polyStyles, ...pointStyles }); }
+        catch (e) { log.warn('setModeStyles static failed', e); }
         log.info('[HydraulicGIS] per-feature style resolvers installed.');
-      }
+      };
       installPerFeatureStyles();
 
-      // Force terra-draw to re-evaluate styles immediately.
+      // Force terra-draw to re-evaluate style resolvers immediately.
       refreshTerraDrawStyles = function () {
         try {
+          if (typeof installPerFeatureStyles === 'function') installPerFeatureStyles();
           const td2 = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
-          if (td2 && typeof td2.getSnapshot === 'function' && typeof td2.addFeatures === 'function') {
-            const snap = td2.getSnapshot() || [];
-            if (snap.length) td2.addFeatures(snap);
+          if (td2 && typeof td2.getMode === 'function' && typeof td2.setMode === 'function') {
+            const mode = td2.getMode() || 'static';
+            td2.setMode(mode);
           }
           map.triggerRepaint();
+          requestAnimationFrame(() => { try { map.triggerRepaint(); } catch (_) {} });
         } catch (_) { try { map.triggerRepaint(); } catch (__) {} }
       };
       // Hook the style refresh into our store.
@@ -2657,6 +2687,16 @@
             notifyFeatures();
             return existing;
           }
+          // Do not ingest in-progress shapes (multi-tap line/polygon draws).
+          try {
+            const curMode = td && td.getMode && td.getMode();
+            const fmode = tdFeature.properties && tdFeature.properties.mode;
+            const isPoint = tdFeature.geometry.type === 'Point' || fmode === 'point';
+            if (curMode && curMode !== 'static' && curMode !== 'select' && !isPoint) {
+              return null;
+            }
+            if (!isPoint && detectFirstVertexCoord([tdFeature])) return null;
+          } catch (_) {}
           if (action && action !== 'draw') {
             log.warn('[HydraulicGIS] ingest with action=' + action + ' but no row — creating');
           }
@@ -2724,8 +2764,8 @@
                 ours.metrics = computeMetrics({ type: 'Feature', geometry: tf.geometry }, ours.kind);
                 ours.updatedAt = Date.now();
                 touched++;
-              } else if (type === 'create' || td.getMode() === 'static') {
-                // Polygon and other modes sometimes register via change, not finish.
+              } else if (type === 'create' && tf.geometry && tf.geometry.type === 'Point') {
+                // Points complete on first tap; other shapes wait for finish.
                 ingestTerraDrawFeature(tid, tf, { action: 'draw', mode: tf.properties && tf.properties.mode });
               }
             }
@@ -2747,6 +2787,7 @@
               const ours = findFeatureByTerraId(terraId);
               if (!ours) { hudLog('  → not found in state'); return; }
               selectFeature(ours.id, { additive: false });
+              clearTerraDrawNativeSelection();
               hudLog('  → sel=[' + state.selectedIds.join(',') + ']');
             } catch (e) { hudLog('  ERR ' + e.message); }
           });
@@ -2782,6 +2823,7 @@
           if (ourIds.length === 0) {
             if (state.selectedIds.length > 0) {
               state.selectedIds = [];
+              clearTerraDrawNativeSelection();
               notifyUi();
             }
             return;
@@ -2854,6 +2896,8 @@
           }
           if (_wasInSelectMode && !isInSelectMode) {
             try { setSelectEditFlags(td, false); } catch (_) {}
+            _terraEditActive = false;
+            clearTerraDrawNativeSelection();
             const eb = document.getElementById('hgis-edit-btn');
             if (eb) eb.classList.remove('active');
             hudLog('left select → edit off');
@@ -3119,7 +3163,7 @@
     measure: 'Mesures',
     tools: 'Outils géométriques',
     legend: 'Légende',
-    coordinates: 'Coordonnées',
+    coordinates: 'Convertir coordonnées',
     search: 'Aller à un point',
     elevation: 'Profil d\'élévation',
     grid: 'Grille de coordonnées',
@@ -3161,7 +3205,7 @@
       { id: 'measure', label: 'Mesures', icon: 'M16 4l4 4L8 20l-4-4L16 4z' },
       { id: 'tools', label: 'Outils géométriques', icon: 'M14.7 6.3a4 4 0 015.66 5.66L10 22.36l-7.07 1.41 1.41-7.07L14.7 6.3z' },
       { id: 'legend', label: 'Légende', icon: 'M4 6h16M4 12h10M4 18h16' },
-      { id: 'coordinates', label: 'Coordonnées', icon: 'M12 2C7 2 4 5.5 4 10c0 5.5 8 12 8 12s8-6.5 8-12c0-4.5-3-8-8-8z' },
+      { id: 'coordinates', label: 'Convertir coordonnées', icon: 'M12 2C7 2 4 5.5 4 10c0 5.5 8 12 8 12s8-6.5 8-12c0-4.5-3-8-8-8z' },
       { id: 'search', label: 'Aller à un point', icon: 'M11 4a7 7 0 100 14 7 7 0 000-14z M16 16l5 5' },
       { id: 'elevation', label: 'Profil d\'élévation', icon: 'M3 18l5-9 4 5 4-7 5 11H3z' },
       { id: 'grid', label: 'Grille de coordonnées', icon: 'M3 9h18M3 15h18M9 3v18M15 3v18' },
