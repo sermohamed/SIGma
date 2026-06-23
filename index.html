@@ -384,7 +384,6 @@
       border-radius: 20px 20px 0 0;
       box-shadow: 0 -16px 40px -8px rgba(0,0,0,0.55);
       max-height: 45dvh;
-      height: auto;
       transform: translateY(100%);
       transition: transform 280ms cubic-bezier(0.32, 0.72, 0, 1);
       display: flex; flex-direction: column;
@@ -471,7 +470,7 @@
     .stack > * + * { margin-top: 12px; }
     .stack-tight > * + * { margin-top: 8px; }
 
-    /* Outils menu: compact sheet height, full-size rows, scroll for overflow. */
+    /* ═════ MENU SHEET ═════ */
     .menu-list {
       display: flex; flex-direction: column; gap: 6px;
       overflow-y: auto;
@@ -833,7 +832,7 @@
         </div>
         <div style="font-family:'JetBrains Mono',ui-monospace,monospace; font-size:10px; line-height:1.5; color:var(--ink-0);">
           <div>Mode: <b id="hud-mode">—</b></div>
-          <div>Sél: <b id="hud-sel">0</b></div>
+          <div>Sél: <b id="hud-sel">0</b> | Multi: <b id="hud-multi">OFF</b></div>
           <div>Dernier event: <b id="hud-event">—</b></div>
           <div id="hud-log" style="margin-top:4px; max-height:80px; overflow-y:auto; font-size:9px; color:var(--ink-1); border-top:1px solid var(--line); padding-top:4px;"></div>
         </div>
@@ -1105,6 +1104,7 @@
   const state = {
     features: [],         // tableau d'objets MapFeature
     selectedIds: [],
+    multiSelectMode: false,  // when true, taps add to selection instead of replacing it
     activePanel: null,
     basemap: 'satellite',  // default: satellite view with city/road labels
     listeners: { features: [], ui: [] },
@@ -1131,7 +1131,6 @@
 
   function notifyFeatures() {
     saveState();
-    try { if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap(); } catch (_) {}
     state.listeners.features.forEach(fn => fn());
   }
   /* Like notifyFeatures, but doesn't trigger UI re-render. Used for style
@@ -1142,11 +1141,14 @@
     if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap();
   }
   function notifyUi() {
+    state.listeners.ui.forEach(fn => fn());
+    // Also push the selection highlight, so when only selectedIds changes
+    // (no feature mutation) the yellow halo updates immediately.
     try {
       if (typeof syncSelectionHighlight === 'function') syncSelectionHighlight();
     } catch (_) {}
-    try { refreshLayersSelectionHighlight(); } catch (_) {}
-    state.listeners.ui.forEach(fn => fn());
+    // Also sync visibility/map state so toggling eye icon or selecting from
+    // calques triggers an immediate map repaint.
     try {
       if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap();
     } catch (_) {}
@@ -1168,46 +1170,11 @@
         type: 'FeatureCollection', features: selFeatures
       });
       if (typeof hudLog === 'function') hudLog('halo: ' + selFeatures.length + ' feat');
-      ensureOverlayLayerOrder();
-    } catch (_) {}
-  }
-
-  function refreshLayersSelectionHighlight() {
-    document.querySelectorAll('.layer-row[data-id]').forEach(row => {
-      const id = row.dataset.id;
-      row.classList.toggle('selected', state.selectedIds.includes(id));
-    });
-  }
-
-  function terraIdMatch(a, b) {
-    if (a == null || b == null) return false;
-    return String(a) === String(b);
-  }
-
-  function findFeatureByTerraId(terraId) {
-    return state.features.find(f =>
-      f.geojson && f.geojson.properties &&
-      terraIdMatch(f.geojson.properties._terraId, terraId));
-  }
-
-  function syncTerraDrawInternalSelect(terraId) {
-    try {
-      const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
-      if (!td || !terraId || typeof td.selectFeature !== 'function') return;
-      if (typeof td.getMode === 'function' && td.getMode() !== 'select') return;
-      td.selectFeature(terraId);
-    } catch (_) {}
-  }
-
-  // Terra-draw paints its own blue selection overlay. We only want the
-  // yellow app-selection halo except during vertex editing (Edit button).
-  let _terraEditActive = false;
-  function clearTerraDrawNativeSelection() {
-    if (_terraEditActive) return;
-    try {
-      const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
-      if (!td) return;
-      if (typeof td.deselect === 'function') td.deselect();
+      // Keep the halo above td-* in case a redraw moved it.
+      if (map.getLayer('app-selection-fill')) map.moveLayer('app-selection-fill');
+      if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
+      if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
+      if (map.getLayer('app-label')) map.moveLayer('app-label');
     } catch (_) {}
   }
   function onFeatures(fn) { state.listeners.features.push(fn); }
@@ -1277,8 +1244,7 @@
     const incomingTerraId = geojson && geojson.properties && geojson.properties._terraId;
     if (incomingTerraId) {
       const existing = state.features.find(x =>
-        x.geojson && x.geojson.properties &&
-        terraIdMatch(x.geojson.properties._terraId, incomingTerraId));
+        x.geojson && x.geojson.properties && terraIdMatch(x.geojson.properties._terraId, incomingTerraId));
       if (existing) {
         log.warn('[HydraulicGIS] addFeature: duplicate _terraId=' + incomingTerraId
                  + ' — updating existing feature ' + existing.id + ' instead of creating new row.');
@@ -1394,22 +1360,11 @@
     const f = state.features.find(x => x.id === id);
     if (f) {
       f.style = { ...f.style, ...patch }; f.updatedAt = Date.now();
-      notifyStyleMapOnly(patch);
+      // Use map-only update so we don't re-render the Style panel mid-drag
+      // (which would destroy the input element being interacted with).
+      notifyFeaturesMapOnly();
     }
   };
-
-  function notifyStyleMapOnly(patch) {
-    saveState();
-    if (patch && Object.prototype.hasOwnProperty.call(patch, 'showLabel')) {
-      try { if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap(); } catch (_) {}
-      try { ensureOverlayLayerOrder(); map.triggerRepaint(); } catch (_) {}
-    }
-  }
-
-  let refreshTerraDrawStyles = function () {
-    try { map.triggerRepaint(); } catch (_) {}
-  };
-  let installPerFeatureStyles = null;
 
   function toggleVisibility(id) {
     const f = state.features.find(x => x.id === id);
@@ -1427,53 +1382,18 @@
     }
     notifyUi();
   }
-
   function selectFeature(id, options = {}) {
     const additive = options.additive === true;
     if (additive) {
-      if (state.selectedIds.includes(id)) {
-        state.selectedIds = state.selectedIds.filter(x => x !== id);
-      } else {
-        state.selectedIds = [...state.selectedIds, id];
-      }
-    } else {
-      state.selectedIds = [id];
+      toggleSelect(id);
+      return;
     }
-    const ours = state.features.find(f => f.id === id);
-    if (ours && ours.geojson && ours.geojson.properties && ours.geojson.properties._terraId) {
-      if (_terraEditActive) {
-        syncTerraDrawInternalSelect(ours.geojson.properties._terraId);
-      } else {
-        clearTerraDrawNativeSelection();
-      }
-    } else {
-      clearTerraDrawNativeSelection();
-    }
+    state.selectedIds = [id];
     notifyUi();
   }
-
-  const PICK_LAYERS = [
-    'td-point', 'td-linestring', 'td-polygon', 'td-polygon-outline',
-    'app-derived-point', 'app-derived-line', 'app-derived-fill',
-  ];
-
-  function pickFeatureAtPoint(point) {
-    const layers = PICK_LAYERS.filter(id => map.getLayer(id));
-    if (!layers.length) return [];
-    const hits = map.queryRenderedFeatures(point, { layers });
-    const ourIds = [];
-    for (const hit of (hits || [])) {
-      let ourId = null;
-      const propId = hit.properties && hit.properties.id;
-      if (propId && state.features.some(f => f.id === propId)) {
-        ourId = propId;
-      } else if (hit.id != null) {
-        const ours = findFeatureByTerraId(hit.id);
-        if (ours) ourId = ours.id;
-      }
-      if (ourId && !ourIds.includes(ourId)) ourIds.push(ourId);
-    }
-    return ourIds;
+  function terraIdMatch(a, b) {
+    if (a == null || b == null) return false;
+    return String(a) === String(b);
   }
 
   /* ═══ 5. MAP & DRAWING ══════════════════════════════════════════════════════ */
@@ -1605,7 +1525,6 @@
       installAppLayers();
       syncFeaturesToMap();
       updateGrid();
-      ensureOverlayLayerOrder();
     } catch (err) { log.error('[HydraulicGIS] restore failed:', err); }
   }, false);
 
@@ -1729,7 +1648,6 @@
         'text-halo-blur': 0.5,
       },
     });
-    updateLabelLayout();
   }
 
   function polyCentroid(f) {
@@ -1739,41 +1657,6 @@
     let x = 0, y = 0;
     for (const [lng, lat] of ring) { x += lng; y += lat; }
     return [x / ring.length, y / ring.length];
-  }
-
-  function updateLabelLayout() {
-    try {
-      if (!map.getLayer('app-label')) return;
-      const mobile = ui.isMobile();
-      map.setLayoutProperty('app-label', 'text-size', mobile ? 14 : 12);
-      map.setLayoutProperty('app-label', 'text-offset', mobile ? [0, 0.8] : [0, 0.6]);
-    } catch (_) {}
-  }
-
-  function ensureOverlayLayerOrder() {
-    try {
-      if (map.getLayer('app-derived-fill')) map.moveLayer('app-derived-fill');
-      if (map.getLayer('app-derived-outline')) map.moveLayer('app-derived-outline');
-      if (map.getLayer('app-derived-line')) map.moveLayer('app-derived-line');
-      if (map.getLayer('app-derived-point')) map.moveLayer('app-derived-point');
-      if (map.getLayer('app-contours-line')) map.moveLayer('app-contours-line');
-      if (map.getLayer('_hgis_first_vertex_layer')) map.moveLayer('_hgis_first_vertex_layer');
-      if (map.getLayer('app-selection-fill')) map.moveLayer('app-selection-fill');
-      if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
-      if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
-      if (map.getLayer('app-label')) map.moveLayer('app-label');
-      updateLabelLayout();
-    } catch (_) {}
-  }
-
-  let _overlayOrderRaf = false;
-  function scheduleOverlayLayerOrder() {
-    if (_overlayOrderRaf) return;
-    _overlayOrderRaf = true;
-    requestAnimationFrame(() => {
-      _overlayOrderRaf = false;
-      ensureOverlayLayerOrder();
-    });
   }
 
   function syncFeaturesToMap() {
@@ -1835,8 +1718,6 @@
 
     try {
       map.getSource(SRC_LABELS).setData({ type: 'FeatureCollection', features: labels });
-      ensureOverlayLayerOrder();
-      map.triggerRepaint();
     } catch (err) {
       log.warn('[HydraulicGIS] label setData failed:', err);
     }
@@ -1855,7 +1736,23 @@
       log.warn('[HydraulicGIS] selection setData failed:', err);
     }
 
-    ensureOverlayLayerOrder();
+    // Critical: re-raise app-label and selection layers ABOVE all terra-draw
+    // layers (td-*) every time we sync. terra-draw lazily creates td-point /
+    // td-linestring / td-polygon when the user draws, and they get added at
+    // the TOP of the layer stack — covering our overlays.
+    try {
+      // Order (bottom to top): td-* (terra-draw), then derived shapes,
+      // then selection halo, then labels.
+      if (map.getLayer('app-derived-fill')) map.moveLayer('app-derived-fill');
+      if (map.getLayer('app-derived-outline')) map.moveLayer('app-derived-outline');
+      if (map.getLayer('app-derived-line')) map.moveLayer('app-derived-line');
+      if (map.getLayer('app-derived-point')) map.moveLayer('app-derived-point');
+      if (map.getLayer('app-contours-line')) map.moveLayer('app-contours-line');
+      if (map.getLayer('app-selection-fill')) map.moveLayer('app-selection-fill');
+      if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
+      if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
+      if (map.getLayer('app-label')) map.moveLayer('app-label');
+    } catch (_) {}
 
     // Re-sync derived features (buffers, intersections) so visibility
     // toggles in Calques affect them too.
@@ -1892,8 +1789,6 @@
     try { map.triggerRepaint(); } catch (_) {}
   }
 
-  map.on('styledata', scheduleOverlayLayerOrder);
-
   // ─── Diagnostic HUD ───
   // Activates on URL param ?debug=1 OR by typing 'D' three times in a row.
   // Lets us see if terra-draw is registering taps when the visual rendering
@@ -1925,13 +1820,14 @@
       while (logEl.children.length > 30) logEl.removeChild(logEl.firstChild);
       // Also update the live counters
       const selEl = document.getElementById('hud-sel');
+      const multiEl = document.getElementById('hud-multi');
       if (selEl && typeof state !== 'undefined') selEl.textContent = state.selectedIds.length;
+      if (multiEl && typeof state !== 'undefined') multiEl.textContent = state.multiSelectMode ? 'ON' : 'OFF';
     } catch (_) {}
   }
   function updateHud(eventLabel) {
-    const hud = document.getElementById('td-hud');
-    if (!hud) return;
-    if (!isDebugMode && hud.style.display === 'none') return;
+    if (!isDebugMode && !document.getElementById('td-hud') ||
+        document.getElementById('td-hud').style.display === 'none') return;
     try {
       const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
       const mode = td && typeof td.getMode === 'function' ? td.getMode() : '—';
@@ -2032,7 +1928,7 @@
       // Force terra-draw into 'static' mode at startup. The wrapper may
       // pre-select a mode (often 'select') which would intercept the
       // user's first tap. Static = idle, no mode active, taps reach our
-      // pointerup tap-select handler.
+      // map.on('click') tap-select handler.
       // Patch terra-draw's select-mode flags with a few retries to be
       // sure the mode is fully constructed by the time we touch it.
       let _flagsPatched = false;
@@ -2241,8 +2137,9 @@
               <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
             </svg>`;
 
-          // Only an Edit button. Taps on the map select features directly
-          // (see pointerup tap-select handler).
+          // Only an Edit button. Multi-select removed per user spec —
+          // in select mode every tap already toggles add/remove (see
+          // td.on("select") handler which calls toggleSelect()).
           const editBtn = document.createElement('button');
           editBtn.id = 'hgis-edit-btn';
           editBtn.type = 'button';
@@ -2259,26 +2156,23 @@
               if (editBtn.classList.contains('active')) {
                 td2.setMode('static');
                 setSelectEditFlags(td2, false);
-                _terraEditActive = false;
                 editBtn.classList.remove('active');
-                clearTerraDrawNativeSelection();
                 hudLog('Edit OFF');
                 return;
               }
               if (state.selectedIds.length === 0) {
                 ui.confirm('Aucune sélection',
-                  "Touchez d'abord un objet sur la carte, puis touchez Éditer.", () => {});
+                  "Sélectionnez d'abord un objet (bouton Sélectionner + tap), puis touchez Éditer.", () => {});
                 return;
               }
               const firstId = state.selectedIds[0];
               const ours = state.features.find(f => f.id === firstId);
-              if (!ours || !ours.geojson.properties || !ours.geojson.properties._terraId) {
+              if (!ours || !ours.geojson.properties._terraId) {
                 ui.confirm('Édition impossible',
                   "Cet objet dérivé (buffer/intersection) ne peut pas être édité.", () => {});
                 return;
               }
               setSelectEditFlags(td2, true);
-              _terraEditActive = true;
               td2.setMode('select');
               try { td2.selectFeature(ours.geojson.properties._terraId); } catch (e) {}
               editBtn.classList.add('active');
@@ -2305,14 +2199,14 @@
       // Features without a matching store entry (e.g. mid-draw) fall back
       // to the default blue. This is what makes the Style panel actually
       // affect rendering.
-      installPerFeatureStyles = function () {
+      function installPerFeatureStyles() {
         const td2 = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
         if (!td2 || typeof td2.setModeStyles !== 'function') return;
+        const terraIdEq = (a, b) => String(a) === String(b);
         const ourFeatureForTerraId = (terraId) => {
           if (!terraId) return null;
           for (const f of state.features) {
-            if (f.geojson && f.geojson.properties &&
-                terraIdMatch(f.geojson.properties._terraId, terraId)) {
+            if (f.geojson && f.geojson.properties && terraIdEq(f.geojson.properties._terraId, terraId)) {
               return f;
             }
           }
@@ -2351,31 +2245,28 @@
         // app-selection layer is the visual indicator of selection.
         try { td2.setModeStyles('select', { ...lineStyles, ...polyStyles, ...pointStyles }); }
         catch (e) { log.warn('setModeStyles select failed', e); }
-        try { td2.setModeStyles('static', { ...lineStyles, ...polyStyles, ...pointStyles }); }
-        catch (e) { log.warn('setModeStyles static failed', e); }
         log.info('[HydraulicGIS] per-feature style resolvers installed.');
-      };
+      }
       installPerFeatureStyles();
 
-      // Force terra-draw to re-evaluate style resolvers immediately.
-      refreshTerraDrawStyles = function () {
+      // Force terra-draw to re-evaluate styles. There is no public refresh
+      // method, but mutating the feature's properties through the public
+      // `addFeatures`/`removeFeatures` API would lose the terraId. The
+      // simplest reliable trigger is a no-op map.triggerRepaint AFTER any
+      // store change — terra-draw re-reads styleFeature on each render.
+      function refreshTerraDrawStyles() {
         try {
-          if (typeof installPerFeatureStyles === 'function') installPerFeatureStyles();
-          const td2 = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
-          if (td2 && typeof td2.getSnapshot === 'function' && typeof td2.addFeatures === 'function') {
-            const snap = td2.getSnapshot() || [];
-            if (snap.length) td2.addFeatures(snap);
-          }
+          installPerFeatureStyles();
           map.triggerRepaint();
           requestAnimationFrame(() => { try { map.triggerRepaint(); } catch (_) {} });
-        } catch (_) { try { map.triggerRepaint(); } catch (__) {} }
-      };
+        } catch (_) {}
+      }
+      // Hook the style refresh into our store. We do this by replacing
+      // setStyle to also trigger a terra-draw repaint.
       const _origSetStyle = setStyle;
       setStyle = function (id, patch) {
         _origSetStyle(id, patch);
-        if (!patch || !Object.prototype.hasOwnProperty.call(patch, 'showLabel')) {
-          try { refreshTerraDrawStyles(); ensureOverlayLayerOrder(); } catch (_) {}
-        }
+        refreshTerraDrawStyles();
       };
 
 
@@ -2643,7 +2534,6 @@
           // Re-apply vertex size boost on every change — td-point may have
           // just been created by terra-draw's lazy layer-add.
           boostTerraDrawPointSize();
-          ensureOverlayLayerOrder();
 
           // ── Mobile first-vertex overlay logic ──
           // Inspect terra-draw's snapshot. If a degenerate (zero-size)
@@ -2674,68 +2564,77 @@
           updateHud(`change ${type} (${ids ? ids.length : 0})`);
         });
 
-        const _promptedTerraIds = new Set();
-
-        function ingestTerraDrawFeature(terraId, tdFeature, ctx) {
-          if (!tdFeature || !tdFeature.geometry) return null;
-          const action = ctx && ctx.action;
-          const fromFinish = !!(ctx && ctx.fromFinish);
-          const existing = findFeatureByTerraId(terraId);
-          if (existing) {
-            existing.geojson.geometry = tdFeature.geometry;
-            existing.metrics = computeMetrics(existing.geojson, existing.kind);
-            existing.updatedAt = Date.now();
-            notifyFeatures();
-            return existing;
-          }
-          // Only block in-progress shapes on the change/create path.
-          // finish always means the user completed the shape.
-          if (!fromFinish) {
-            const fmode = tdFeature.properties && tdFeature.properties.mode;
-            const isPoint = tdFeature.geometry.type === 'Point' || fmode === 'point';
-            if (!isPoint) return null;
-            try {
-              if (detectFirstVertexCoord([tdFeature])) return null;
-            } catch (_) {}
-          }
-          if (action && action !== 'draw') {
-            log.warn('[HydraulicGIS] ingest with action=' + action + ' but no row — creating');
-          }
-          const mode = (tdFeature.properties && tdFeature.properties.mode) || (ctx && ctx.mode) || '';
-          const kind = kindFromGeom(tdFeature.geometry, mode);
-          const newF = addFeature({
-            type: 'Feature',
-            geometry: tdFeature.geometry,
-            properties: { _terraId: terraId },
-          }, kind);
-          log.info('[HydraulicGIS] added feature', newF.id, 'kind=' + kind);
-          try {
-            if (typeof drawControl.toggleButtonsWhenNoFeature === 'function') {
-              drawControl.toggleButtonsWhenNoFeature();
-            }
-          } catch (_) {}
-          try { if (td && typeof td.setMode === 'function') td.setMode('static'); } catch (_) {}
-          try { map.triggerRepaint(); } catch (_) {}
-          const tidKey = String(terraId);
-          if (!_promptedTerraIds.has(tidKey)) {
-            _promptedTerraIds.add(tidKey);
-            promptFeatureName(newF.id);
-          }
-          selectFeature(newF.id, { additive: false });
-          return newF;
-        }
-
         // When a draw finishes, copy the feature into our store for the
         // Calques panel, exports, measurements. The map already shows it
         // because terra-draw still owns the rendering.
+        const _promptedTerraIds = new Set();
         td.on('finish', (id, ctx) => {
+          // Clear the first-vertex overlay marker — terra-draw now owns the
+          // visible feature (it has its own vertex points after the 2nd tap).
           clearFirstVertex();
           try {
             log.info('[HydraulicGIS] terra-draw finish:', id, 'action=' + (ctx && ctx.action));
+            // CRITICAL: terra-draw fires 'finish' for several actions, not
+            // just the initial draw:
+            //   • action: "draw"               — initial creation (create our row)
+            //   • action: "dragCoordinate"     — vertex was moved (geometry changed)
+            //   • action: "dragFeature"        — whole shape was moved
+            //   • action: "dragCoordinateResize" — rectangle/circle was resized
+            // Without this guard we were creating a NEW row every edit,
+            // producing duplicate labels and re-opening the rename prompt.
+            // For non-draw actions we just sync the geometry of the
+            // already-existing row.
+            const action = ctx && ctx.action;
             const snap = td.getSnapshot();
             const f = snap.find(x => terraIdMatch(x.id, id));
             if (!f) return;
-            ingestTerraDrawFeature(id, f, { ...(ctx || {}), fromFinish: true, action: (ctx && ctx.action) || 'draw' });
+
+            // Check if we already have a row for this terra-draw feature.
+            const existing = state.features.find(x =>
+              x.geojson && x.geojson.properties && terraIdMatch(x.geojson.properties._terraId, id));
+
+            if (existing) {
+              // Edit — sync geometry, recompute metrics, do NOT prompt for name.
+              existing.geojson.geometry = f.geometry;
+              existing.metrics = computeMetrics(existing.geojson, existing.kind);
+              existing.updatedAt = Date.now();
+              notifyFeatures();
+              try { map.triggerRepaint(); } catch (_) {}
+              log.info('[HydraulicGIS] synced geometry for existing feature', existing.id, 'on action=' + action);
+              return;
+            }
+
+            // No existing row → genuine new feature. Only treat as creation
+            // when the action says so (defensive — falls through to creation
+            // also when action is undefined, e.g. older terra-draw bundles).
+            if (action && action !== 'draw') {
+              log.warn('[HydraulicGIS] finish with action=' + action + ' but no matching row — creating row anyway');
+            }
+            const mode = (f.properties && f.properties.mode) || (ctx && ctx.mode) || '';
+            const kind = kindFromGeom(f.geometry, mode);
+            const newF = addFeature({ type: 'Feature', geometry: f.geometry, properties: { _terraId: id } }, kind);
+            log.info('[HydraulicGIS] added feature', newF.id, 'kind=' + kind);
+            try {
+              if (typeof drawControl.toggleButtonsWhenNoFeature === 'function') {
+                drawControl.toggleButtonsWhenNoFeature();
+              }
+            } catch (_) {}
+            try { map.triggerRepaint(); } catch (_) {}
+            // CRITICAL: reset to 'static' so the NEXT map tap goes through
+            // our map.on('click') handler (which does tap-select). Without
+            // this, terra-draw stays in its draw mode and intercepts taps
+            // as new vertices instead of letting us select.
+            try {
+              if (td && typeof td.setMode === 'function') td.setMode('static');
+            } catch (_) {}
+            // Open the rename prompt — let the user accept the default or
+            // type a custom name. The modal is non-blocking; if the user
+            // dismisses it the default name remains.
+            const tidKey = String(id);
+            if (!_promptedTerraIds.has(tidKey)) {
+              _promptedTerraIds.add(tidKey);
+              promptFeatureName(newF.id);
+            }
           } catch (err) {
             log.error('[HydraulicGIS] error in finish handler:', err);
           }
@@ -2759,35 +2658,86 @@
             for (const tid of ids) {
               const tf = snap.find(x => terraIdMatch(x.id, tid));
               if (!tf) continue;
-              const ours = findFeatureByTerraId(tid);
+              const ours = state.features.find(f => f.geojson.properties && terraIdMatch(f.geojson.properties._terraId, tid));
               if (ours) {
                 ours.geojson.geometry = tf.geometry;
                 ours.metrics = computeMetrics({ type: 'Feature', geometry: tf.geometry }, ours.kind);
                 ours.updatedAt = Date.now();
                 touched++;
-              } else if (type === 'create' && tf.geometry && tf.geometry.type === 'Point') {
-                // Points complete on first tap; other shapes wait for finish.
-                ingestTerraDrawFeature(tid, tf, { action: 'draw', mode: tf.properties && tf.properties.mode });
+                continue;
+              }
+              // Points can complete via `change/create` on some devices.
+              if (type === 'create' && tf.geometry && tf.geometry.type === 'Point') {
+                const mode = (tf.properties && tf.properties.mode) || '';
+                const kind = kindFromGeom(tf.geometry, mode);
+                const newF = addFeature({ type: 'Feature', geometry: tf.geometry, properties: { _terraId: tid } }, kind);
+                const tidKey = String(tid);
+                if (!_promptedTerraIds.has(tidKey)) {
+                  _promptedTerraIds.add(tidKey);
+                  promptFeatureName(newF.id);
+                }
+                selectFeature(newF.id, { additive: false });
               }
             }
             if (touched) {
               log.info('[HydraulicGIS] updated', touched, 'feature(s) edited in terra-draw');
+              // Full refresh: re-sync map (labels follow geometry), re-render
+              // panels (Mesures shows new lengths/areas), update selection
+              // halo. The old code only called notifyUi() which left the
+              // labels and metrics stale until the user refreshed the page.
               notifyFeatures();
             }
           }
         });
 
+        // ─── Auto-select our store row when user picks on the map ────────
+        // Two paths: (a) terra-draw 'select' event (when in Select mode and
+        // user taps a feature) and (b) a regular map click that hit-tests
+        // the td-* layers (so the user gets selection even outside Select
+        // mode). Both update state.selectedIds so the Style/Measure/etc.
+        // panels become useful immediately without a detour through the
+        // Calques panel.
         // ─── Selection model ─────────────────────────────────────────
-        // Tap on a feature (static or select mode) → select (halo only).
-        // Edit button → terra-draw enters select mode for ONE selected feature.
-        // Tapping where multiple features overlap → cycles through them.
+        // Per user spec:
+        //   - Tap on a feature on the map → select (halo only, no edit).
+        //   - Multi-select toggle ON → tap adds/removes from selection.
+        //   - Edit button → terra-draw enters select mode for ONE selected feature.
+        //   - Delete button → removes all selectedIds.
+        //   - Tapping where multiple features overlap → cycles through them on
+        //     successive taps (so you can reach features hidden under others).
+        //
+        // The 'select' event from terra-draw fires when the user taps a
+        // feature in select-mode (native Select button). We use it to
+        // sync our state.selectedIds so the yellow halo (app-selection
+        // layer) and the panels reflect the selection.
+        // If multi-select toggle is ON, we ADD to selection rather than
+        // replace. Note: terra-draw itself can't do multi-select (the
+        // bundle's select() does deselect() before selecting), so for
+        // multi we additionally re-mark all selected features inside
+        // terra-draw via td.selectFeature in a loop.
         if (typeof td.on === 'function') {
+          // When the user taps a feature in terra-draw's select-mode,
+          // we use toggleSelect() — the EXACT same function that the
+          // Calques panel uses. That guarantees:
+          //   • same add/remove behaviour
+          //   • same yellow halo (via syncSelectionHighlight)
+          //   • full sync: taps on the map and taps in Calques are
+          //     always consistent because they share state.selectedIds.
           td.on('select', (terraId) => {
             try {
               hudLog('td.select ' + terraId);
-              const ours = findFeatureByTerraId(terraId);
+              const ours = state.features.find(f =>
+                f.geojson && f.geojson.properties &&
+                terraIdMatch(f.geojson.properties._terraId, terraId));
               if (!ours) { hudLog('  → not found in state'); return; }
-              selectFeature(ours.id, { additive: false });
+              // toggleSelect adds if absent, removes if present — same
+              // as checking a checkbox in the Calques panel.
+              selectFeature(ours.id, { additive: state.multiSelectMode });
+              const eb = document.getElementById('hgis-edit-btn');
+              const isEditActive = !!(eb && eb.classList.contains('active'));
+              if (!isEditActive && typeof td.deselect === 'function') {
+                try { td.deselect(); } catch (_) {}
+              }
               hudLog('  → sel=[' + state.selectedIds.join(',') + ']');
             } catch (e) { hudLog('  ERR ' + e.message); }
           });
@@ -2795,75 +2745,93 @@
         }
 
         // Track the last hit position + the "cycle index" so successive taps
-        // at the SAME point cycle through stacked features.
+        // at the SAME point cycle through stacked features. We reset the
+        // cycle when the user taps a different location (>10 px away).
         let lastTapPx = null;
         let lastTapStackIds = [];
         let lastTapCycleIdx = 0;
 
-        // ─── Unified tap-to-select (static + select modes) ─────────────
-        const TAP_MOVE_THRESHOLD = 8;
-        let _tapDown = null;
-
-        function isDrawMode(mode) {
-          return mode && mode !== 'static' && mode !== 'select';
-        }
-
-        function handleMapTap(point) {
-          if (typeof pickModeOff !== 'undefined' && pickModeOff) return;
-          let mode = 'static';
+        // ─── Tap-to-select (only in select-mode) ────────────────────────
+        //
+        // Per user spec, the SELECT mode (toggled by the arrow button) is
+        // the gate for selection:
+        //   • Mode is NOT 'select' (static, or drawing) → tap does nothing.
+        //   • Mode IS 'select', Multi OFF → tap = replace selection.
+        //   • Mode IS 'select', Multi ON  → tap = toggle in/out of selection.
+        //
+        // We piggyback on terra-draw's own pointer event in select-mode
+        // (which fires 'select' with the terra-draw feature id). Our
+        // map.on('click') is the fallback for derived features (which
+        // terra-draw doesn't know about — buffers, intersections, contours).
+        map.on('click', (e) => {
           try {
-            if (td && typeof td.getMode === 'function') {
-              const m = td.getMode();
-              if (m) mode = m;
+            let mode = 'static';
+            try {
+              if (td && typeof td.getMode === 'function') {
+                const m = td.getMode();
+                if (m) mode = m;
+              }
+            } catch (_) {}
+            // ONLY act in select-mode. In static or drawing modes, ignore.
+            if (mode !== 'select') return;
+
+            // For terra-draw features (td-*), terra-draw's own select()
+            // already fires td.on('select'). We only need to handle the
+            // case of DERIVED features (buffer/intersection/contours)
+            // which live in app-derived-* layers — those bypass td.
+            const layers = ['app-derived-point', 'app-derived-line', 'app-derived-fill']
+              .filter(id => map.getLayer(id));
+            if (layers.length === 0) return;
+            const hits = map.queryRenderedFeatures(e.point, { layers });
+
+            // Resolve hits to OUR feature ids.
+            const ourIds = [];
+            for (const hit of (hits || [])) {
+              const propId = hit.properties && hit.properties.id;
+              const ours = state.features.find(f => propId && f.id === propId);
+              if (ours && !ourIds.includes(ours.id)) ourIds.push(ours.id);
             }
-          } catch (_) {}
-          if (isDrawMode(mode)) return;
-
-          const ourIds = pickFeatureAtPoint(point);
-          if (ourIds.length === 0) {
-            if (state.selectedIds.length > 0) {
-              state.selectedIds = [];
-              clearTerraDrawNativeSelection();
-              notifyUi();
+            if (ourIds.length === 0) {
+              // Tap on empty space in select-mode:
+              //   Multi OFF → clear selection.
+              //   Multi ON  → keep selection (don't surprise).
+              if (!state.multiSelectMode && state.selectedIds.length > 0) {
+                state.selectedIds = [];
+                notifyUi();
+              }
+              return;
             }
-            return;
-          }
-
-          const curPx = [point.x, point.y];
-          const samePlace = lastTapPx
-            && Math.abs(lastTapPx[0] - curPx[0]) < 10
-            && Math.abs(lastTapPx[1] - curPx[1]) < 10
-            && lastTapStackIds.length === ourIds.length
-            && lastTapStackIds.every((id, i) => id === ourIds[i]);
-          if (!samePlace) {
-            lastTapPx = curPx;
-            lastTapStackIds = ourIds.slice();
-            lastTapCycleIdx = 0;
-          } else {
-            lastTapCycleIdx = (lastTapCycleIdx + 1) % ourIds.length;
-          }
-          const pickedId = ourIds[lastTapCycleIdx];
-          selectFeature(pickedId, { additive: false });
-          hudLog('tap-select ' + pickedId);
-        }
-
-        mapCanvas.addEventListener('pointerdown', (ev) => {
-          if (!ev.isPrimary) return;
-          _tapDown = { x: ev.clientX, y: ev.clientY };
-        }, true);
-
-        mapCanvas.addEventListener('pointerup', (ev) => {
-          if (!ev.isPrimary || !_tapDown) return;
-          const dx = ev.clientX - _tapDown.x;
-          const dy = ev.clientY - _tapDown.y;
-          _tapDown = null;
-          if (Math.sqrt(dx * dx + dy * dy) > TAP_MOVE_THRESHOLD) return;
-          try {
-            const rect = mapCanvas.getBoundingClientRect();
-            const point = { x: ev.clientX - rect.left, y: ev.clientY - rect.top };
-            handleMapTap(point);
+            // Cycle / pick
+            const curPx = [e.point.x, e.point.y];
+            const samePlace = lastTapPx
+              && Math.abs(lastTapPx[0] - curPx[0]) < 10
+              && Math.abs(lastTapPx[1] - curPx[1]) < 10
+              && lastTapStackIds.length === ourIds.length
+              && lastTapStackIds.every((id, i) => id === ourIds[i]);
+            if (!samePlace) {
+              lastTapPx = curPx;
+              lastTapStackIds = ourIds.slice();
+              lastTapCycleIdx = 0;
+            } else {
+              lastTapCycleIdx = (lastTapCycleIdx + 1) % ourIds.length;
+            }
+            const pickedId = ourIds[lastTapCycleIdx];
+            if (state.multiSelectMode) {
+              const idx = state.selectedIds.indexOf(pickedId);
+              if (idx === -1) {
+                state.selectedIds = [...state.selectedIds, pickedId];
+                log.info('[Derived+Multi] ADD', pickedId, 'total=' + state.selectedIds.length);
+              } else {
+                state.selectedIds = state.selectedIds.filter(id => id !== pickedId);
+                log.info('[Derived+Multi] REMOVE', pickedId, 'total=' + state.selectedIds.length);
+              }
+            } else {
+              state.selectedIds = [pickedId];
+              log.info('[Derived] select', pickedId);
+            }
+            notifyUi();
           } catch (err) { log.warn('[HydraulicGIS] tap failed:', err); }
-        }, true);
+        });
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
@@ -2871,8 +2839,8 @@
       // Disable doubleClickZoom while in any draw mode — otherwise the second
       // tap of click-move rectangle/circle drawing also triggers zoom-in.
       //
-      // Also: track when we LEAVE the select mode — reset Edit button only;
-      // selection halo persists until Escape or empty-map tap.
+      // Also: track when we LEAVE the select mode (user clicked the arrow
+      // button to deactivate it) — per user spec, that clears the halo.
       let _wasInSelectMode = false;
       function syncGesturesToMode() {
         try {
@@ -2884,23 +2852,17 @@
               && mode !== 'rectangle' && mode !== 'circle') {
             clearFirstVertex();
           }
+          // Track select mode transitions for the selection-clearing rule.
           const isInSelectMode = (mode === 'select');
           if (_wasInSelectMode !== isInSelectMode) {
             hudLog('mode: ' + (isInSelectMode ? '→ select' : '← left select'));
           }
-          if (isInSelectMode && !_wasInSelectMode) {
-            const eb = document.getElementById('hgis-edit-btn');
-            if (!eb || !eb.classList.contains('active')) {
-              try { setSelectEditFlags(td, false); } catch (_) {}
-            }
-          }
           if (_wasInSelectMode && !isInSelectMode) {
+            // Left select mode: keep current selection, only reset edit flags.
             try { setSelectEditFlags(td, false); } catch (_) {}
-            _terraEditActive = false;
-            clearTerraDrawNativeSelection();
             const eb = document.getElementById('hgis-edit-btn');
             if (eb) eb.classList.remove('active');
-            hudLog('left select → edit off');
+            hudLog('left select → keep selection');
           }
           _wasInSelectMode = isInSelectMode;
         } catch (_) {}
@@ -3274,7 +3236,7 @@
       btn.addEventListener('click', (e) => {
         const id = btn.dataset.id;
         const action = btn.dataset.action;
-        if (action === 'select') selectFeature(id, { additive: true });
+        if (action === 'select') selectFeature(id, { additive: state.multiSelectMode });
         else if (action === 'zoom') zoomToFeature(id);
         else if (action === 'visibility') toggleVisibility(id);
         else if (action === 'delete') {
@@ -3371,7 +3333,7 @@
             <span>Afficher l'étiquette</span>
           </label>
         </div>
-        <button type="button" class="btn btn-solid" id="st-apply" style="margin-top:8px; width:100%;">Appliquer les styles</button>
+        <button type="button" class="btn btn-solid" id="st-apply" style="width:100%;">Appliquer</button>
       </div>`;
   }
 
@@ -3410,14 +3372,11 @@
       root.querySelector('#st-opacity-val').textContent = Math.round(v * 100) + '%';
     });
     root.querySelector('#st-label')?.addEventListener('change', e => {
-      const v = e.target.checked;
-      state.selectedIds.forEach(id => setStyle(id, { showLabel: v }));
-      notifyUi();
+      apply({ showLabel: e.target.checked });
     });
     root.querySelector('#st-apply')?.addEventListener('click', () => {
-      try { refreshTerraDrawStyles(); } catch (_) {}
-      try { syncFeaturesToMap(); } catch (_) {}
-      notifyUi();
+      try { if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap(); } catch (_) {}
+      try { map.triggerRepaint(); } catch (_) {}
     });
   }
 
@@ -5488,9 +5447,6 @@
       } else if (state.activePanel) {
         if (ui.isMobile()) ui.closeSheet();
         else ui.setPanel(null);
-      } else if (state.selectedIds.length > 0) {
-        state.selectedIds = [];
-        notifyUi();
       }
     } else if (e.key === 'Delete' || e.key === 'Backspace') {
       // Delete selected features
