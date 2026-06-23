@@ -25,6 +25,9 @@
 
   <!-- file-saver (téléchargement des exports) -->
   <script src="vendor/FileSaver.min.js"></script>
+  <script src="vendor/hgis-terradraw-adapter.js"></script>
+  <script src="vendor/hgis-selection-adapter.js"></script>
+  <script src="vendor/hgis-mode-adapter.js"></script>
 
   <!-- Note: KML export is implemented inline (no external dep needed). -->
 
@@ -2564,317 +2567,66 @@
           updateHud(`change ${type} (${ids ? ids.length : 0})`);
         });
 
-        // When a draw finishes, copy the feature into our store for the
-        // Calques panel, exports, measurements. The map already shows it
-        // because terra-draw still owns the rendering.
-        const _promptedTerraIds = new Set();
-        td.on('finish', (id, ctx) => {
-          // Clear the first-vertex overlay marker — terra-draw now owns the
-          // visible feature (it has its own vertex points after the 2nd tap).
-          clearFirstVertex();
-          try {
-            log.info('[HydraulicGIS] terra-draw finish:', id, 'action=' + (ctx && ctx.action));
-            // CRITICAL: terra-draw fires 'finish' for several actions, not
-            // just the initial draw:
-            //   • action: "draw"               — initial creation (create our row)
-            //   • action: "dragCoordinate"     — vertex was moved (geometry changed)
-            //   • action: "dragFeature"        — whole shape was moved
-            //   • action: "dragCoordinateResize" — rectangle/circle was resized
-            // Without this guard we were creating a NEW row every edit,
-            // producing duplicate labels and re-opening the rename prompt.
-            // For non-draw actions we just sync the geometry of the
-            // already-existing row.
-            const action = ctx && ctx.action;
-            const snap = td.getSnapshot();
-            const f = snap.find(x => terraIdMatch(x.id, id));
-            if (!f) return;
-
-            // Check if we already have a row for this terra-draw feature.
-            const existing = state.features.find(x =>
-              x.geojson && x.geojson.properties && terraIdMatch(x.geojson.properties._terraId, id));
-
-            if (existing) {
-              // Edit — sync geometry, recompute metrics, do NOT prompt for name.
-              existing.geojson.geometry = f.geometry;
-              existing.metrics = computeMetrics(existing.geojson, existing.kind);
-              existing.updatedAt = Date.now();
-              notifyFeatures();
-              try { map.triggerRepaint(); } catch (_) {}
-              log.info('[HydraulicGIS] synced geometry for existing feature', existing.id, 'on action=' + action);
-              return;
-            }
-
-            // No existing row → genuine new feature. Only treat as creation
-            // when the action says so (defensive — falls through to creation
-            // also when action is undefined, e.g. older terra-draw bundles).
-            if (action && action !== 'draw') {
-              log.warn('[HydraulicGIS] finish with action=' + action + ' but no matching row — creating row anyway');
-            }
-            const mode = (f.properties && f.properties.mode) || (ctx && ctx.mode) || '';
-            const kind = kindFromGeom(f.geometry, mode);
-            const newF = addFeature({ type: 'Feature', geometry: f.geometry, properties: { _terraId: id } }, kind);
-            log.info('[HydraulicGIS] added feature', newF.id, 'kind=' + kind);
+        HGISWireTerraDrawAdapter({
+          td,
+          state,
+          log,
+          hudLog,
+          terraIdMatch,
+          kindFromGeom,
+          addFeature,
+          removeFeature,
+          selectFeature,
+          promptFeatureName,
+          computeMetrics,
+          notifyFeatures,
+          clearFirstVertex,
+          triggerRepaint: () => { try { map.triggerRepaint(); } catch (_) {} },
+          toggleButtonsWhenNoFeature: () => { try { drawControl.toggleButtonsWhenNoFeature(); } catch (_) {} },
+          ensureStaticMode: () => { try { if (td && typeof td.setMode === 'function') td.setMode('static'); } catch (_) {} },
+          forceYellowHalo: () => {
+            try { if (typeof syncSelectionHighlight === 'function') syncSelectionHighlight(); } catch (_) {}
             try {
-              if (typeof drawControl.toggleButtonsWhenNoFeature === 'function') {
-                drawControl.toggleButtonsWhenNoFeature();
-              }
+              if (map.getLayer('app-selection-fill')) map.moveLayer('app-selection-fill');
+              if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
+              if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
+              if (map.getLayer('app-label')) map.moveLayer('app-label');
             } catch (_) {}
             try { map.triggerRepaint(); } catch (_) {}
-            // CRITICAL: reset to 'static' so the NEXT map tap goes through
-            // our map.on('click') handler (which does tap-select). Without
-            // this, terra-draw stays in its draw mode and intercepts taps
-            // as new vertices instead of letting us select.
-            try {
-              if (td && typeof td.setMode === 'function') td.setMode('static');
-            } catch (_) {}
-            // Open the rename prompt — let the user accept the default or
-            // type a custom name. The modal is non-blocking; if the user
-            // dismisses it the default name remains.
-            const tidKey = String(id);
-            if (!_promptedTerraIds.has(tidKey)) {
-              _promptedTerraIds.add(tidKey);
-              promptFeatureName(newF.id);
-            }
-          } catch (err) {
-            log.error('[HydraulicGIS] error in finish handler:', err);
-          }
+          },
+          isMultiSelectMode: () => state.multiSelectMode === true,
+          isEditActive: () => {
+            const eb = document.getElementById('hgis-edit-btn');
+            return !!(eb && eb.classList.contains('active'));
+          },
         });
 
-        // Sync deletes (Delete / Delete-Selection buttons in the toolbar)
-        // and edits (Select-mode vertex drags) back into our store.
-        td.on('change', (ids, type) => {
-          if (type === 'delete') {
-            const banTerraIds = new Set(ids.map(String));
-            const toRemove = state.features
-              .filter(f => f.geojson.properties && banTerraIds.has(String(f.geojson.properties._terraId)))
-              .map(f => f.id);
-            if (toRemove.length) {
-              log.info('[HydraulicGIS] removing', toRemove.length, 'feature(s) deleted in terra-draw');
-              toRemove.forEach(removeFeature);
-            }
-          } else if (type === 'create' || type === 'update') {
-            const snap = td.getSnapshot();
-            let touched = 0;
-            for (const tid of ids) {
-              const tf = snap.find(x => terraIdMatch(x.id, tid));
-              if (!tf) continue;
-              const ours = state.features.find(f => f.geojson.properties && terraIdMatch(f.geojson.properties._terraId, tid));
-              if (ours) {
-                ours.geojson.geometry = tf.geometry;
-                ours.metrics = computeMetrics({ type: 'Feature', geometry: tf.geometry }, ours.kind);
-                ours.updatedAt = Date.now();
-                touched++;
-                continue;
-              }
-              // Points can complete via `change/create` on some devices.
-              if (type === 'create' && tf.geometry && tf.geometry.type === 'Point') {
-                const mode = (tf.properties && tf.properties.mode) || '';
-                const kind = kindFromGeom(tf.geometry, mode);
-                const newF = addFeature({ type: 'Feature', geometry: tf.geometry, properties: { _terraId: tid } }, kind);
-                const tidKey = String(tid);
-                if (!_promptedTerraIds.has(tidKey)) {
-                  _promptedTerraIds.add(tidKey);
-                  promptFeatureName(newF.id);
-                }
-                selectFeature(newF.id, { additive: false });
-              }
-            }
-            if (touched) {
-              log.info('[HydraulicGIS] updated', touched, 'feature(s) edited in terra-draw');
-              // Full refresh: re-sync map (labels follow geometry), re-render
-              // panels (Mesures shows new lengths/areas), update selection
-              // halo. The old code only called notifyUi() which left the
-              // labels and metrics stale until the user refreshed the page.
-              notifyFeatures();
-            }
-          }
-        });
-
-        // ─── Auto-select our store row when user picks on the map ────────
-        // Two paths: (a) terra-draw 'select' event (when in Select mode and
-        // user taps a feature) and (b) a regular map click that hit-tests
-        // the td-* layers (so the user gets selection even outside Select
-        // mode). Both update state.selectedIds so the Style/Measure/etc.
-        // panels become useful immediately without a detour through the
-        // Calques panel.
-        // ─── Selection model ─────────────────────────────────────────
-        // Per user spec:
-        //   - Tap on a feature on the map → select (halo only, no edit).
-        //   - Multi-select toggle ON → tap adds/removes from selection.
-        //   - Edit button → terra-draw enters select mode for ONE selected feature.
-        //   - Delete button → removes all selectedIds.
-        //   - Tapping where multiple features overlap → cycles through them on
-        //     successive taps (so you can reach features hidden under others).
-        //
-        // The 'select' event from terra-draw fires when the user taps a
-        // feature in select-mode (native Select button). We use it to
-        // sync our state.selectedIds so the yellow halo (app-selection
-        // layer) and the panels reflect the selection.
-        // If multi-select toggle is ON, we ADD to selection rather than
-        // replace. Note: terra-draw itself can't do multi-select (the
-        // bundle's select() does deselect() before selecting), so for
-        // multi we additionally re-mark all selected features inside
-        // terra-draw via td.selectFeature in a loop.
-        if (typeof td.on === 'function') {
-          // When the user taps a feature in terra-draw's select-mode,
-          // we use toggleSelect() — the EXACT same function that the
-          // Calques panel uses. That guarantees:
-          //   • same add/remove behaviour
-          //   • same yellow halo (via syncSelectionHighlight)
-          //   • full sync: taps on the map and taps in Calques are
-          //     always consistent because they share state.selectedIds.
-          td.on('select', (terraId) => {
-            try {
-              hudLog('td.select ' + terraId);
-              const ours = state.features.find(f =>
-                f.geojson && f.geojson.properties &&
-                terraIdMatch(f.geojson.properties._terraId, terraId));
-              if (!ours) { hudLog('  → not found in state'); return; }
-              // toggleSelect adds if absent, removes if present — same
-              // as checking a checkbox in the Calques panel.
-              selectFeature(ours.id, { additive: state.multiSelectMode });
-              const eb = document.getElementById('hgis-edit-btn');
-              const isEditActive = !!(eb && eb.classList.contains('active'));
-              if (!isEditActive && typeof td.deselect === 'function') {
-                try { td.deselect(); } catch (_) {}
-              }
-              hudLog('  → sel=[' + state.selectedIds.join(',') + ']');
-            } catch (e) { hudLog('  ERR ' + e.message); }
-          });
-          td.on('deselect', () => { /* ignore — halo controlled by us */ });
-        }
-
-        // Track the last hit position + the "cycle index" so successive taps
-        // at the SAME point cycle through stacked features. We reset the
-        // cycle when the user taps a different location (>10 px away).
-        let lastTapPx = null;
-        let lastTapStackIds = [];
-        let lastTapCycleIdx = 0;
-
-        // ─── Tap-to-select (only in select-mode) ────────────────────────
-        //
-        // Per user spec, the SELECT mode (toggled by the arrow button) is
-        // the gate for selection:
-        //   • Mode is NOT 'select' (static, or drawing) → tap does nothing.
-        //   • Mode IS 'select', Multi OFF → tap = replace selection.
-        //   • Mode IS 'select', Multi ON  → tap = toggle in/out of selection.
-        //
-        // We piggyback on terra-draw's own pointer event in select-mode
-        // (which fires 'select' with the terra-draw feature id). Our
-        // map.on('click') is the fallback for derived features (which
-        // terra-draw doesn't know about — buffers, intersections, contours).
-        map.on('click', (e) => {
-          try {
-            let mode = 'static';
-            try {
-              if (td && typeof td.getMode === 'function') {
-                const m = td.getMode();
-                if (m) mode = m;
-              }
-            } catch (_) {}
-            // ONLY act in select-mode. In static or drawing modes, ignore.
-            if (mode !== 'select') return;
-
-            // For terra-draw features (td-*), terra-draw's own select()
-            // already fires td.on('select'). We only need to handle the
-            // case of DERIVED features (buffer/intersection/contours)
-            // which live in app-derived-* layers — those bypass td.
-            const layers = ['app-derived-point', 'app-derived-line', 'app-derived-fill']
-              .filter(id => map.getLayer(id));
-            if (layers.length === 0) return;
-            const hits = map.queryRenderedFeatures(e.point, { layers });
-
-            // Resolve hits to OUR feature ids.
-            const ourIds = [];
-            for (const hit of (hits || [])) {
-              const propId = hit.properties && hit.properties.id;
-              const ours = state.features.find(f => propId && f.id === propId);
-              if (ours && !ourIds.includes(ours.id)) ourIds.push(ours.id);
-            }
-            if (ourIds.length === 0) {
-              // Tap on empty space in select-mode:
-              //   Multi OFF → clear selection.
-              //   Multi ON  → keep selection (don't surprise).
-              if (!state.multiSelectMode && state.selectedIds.length > 0) {
-                state.selectedIds = [];
-                notifyUi();
-              }
-              return;
-            }
-            // Cycle / pick
-            const curPx = [e.point.x, e.point.y];
-            const samePlace = lastTapPx
-              && Math.abs(lastTapPx[0] - curPx[0]) < 10
-              && Math.abs(lastTapPx[1] - curPx[1]) < 10
-              && lastTapStackIds.length === ourIds.length
-              && lastTapStackIds.every((id, i) => id === ourIds[i]);
-            if (!samePlace) {
-              lastTapPx = curPx;
-              lastTapStackIds = ourIds.slice();
-              lastTapCycleIdx = 0;
-            } else {
-              lastTapCycleIdx = (lastTapCycleIdx + 1) % ourIds.length;
-            }
-            const pickedId = ourIds[lastTapCycleIdx];
-            if (state.multiSelectMode) {
-              const idx = state.selectedIds.indexOf(pickedId);
-              if (idx === -1) {
-                state.selectedIds = [...state.selectedIds, pickedId];
-                log.info('[Derived+Multi] ADD', pickedId, 'total=' + state.selectedIds.length);
-              } else {
-                state.selectedIds = state.selectedIds.filter(id => id !== pickedId);
-                log.info('[Derived+Multi] REMOVE', pickedId, 'total=' + state.selectedIds.length);
-              }
-            } else {
-              state.selectedIds = [pickedId];
-              log.info('[Derived] select', pickedId);
-            }
-            notifyUi();
-          } catch (err) { log.warn('[HydraulicGIS] tap failed:', err); }
+        HGISWireSelectionAdapter({
+          map,
+          td,
+          state,
+          log,
+          notifyUi,
+          selectFeature,
         });
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
 
-      // Disable doubleClickZoom while in any draw mode — otherwise the second
-      // tap of click-move rectangle/circle drawing also triggers zoom-in.
-      //
-      // Also: track when we LEAVE the select mode (user clicked the arrow
-      // button to deactivate it) — per user spec, that clears the halo.
-      let _wasInSelectMode = false;
-      function syncGesturesToMode() {
-        try {
-          const mode = td && typeof td.getMode === 'function' ? td.getMode() : 'static';
-          const isDrawing = mode && mode !== 'static' && mode !== 'select';
-          setDoubleClickZoom(!isDrawing);
-          // If we leave linestring/polygon mid-draw, clear the overlay marker.
-          if (mode !== 'linestring' && mode !== 'polygon'
-              && mode !== 'rectangle' && mode !== 'circle') {
-            clearFirstVertex();
-          }
-          // Track select mode transitions for the selection-clearing rule.
-          const isInSelectMode = (mode === 'select');
-          if (_wasInSelectMode !== isInSelectMode) {
-            hudLog('mode: ' + (isInSelectMode ? '→ select' : '← left select'));
-          }
-          if (_wasInSelectMode && !isInSelectMode) {
-            // Left select mode: keep current selection, only reset edit flags.
-            try { setSelectEditFlags(td, false); } catch (_) {}
-            const eb = document.getElementById('hgis-edit-btn');
-            if (eb) eb.classList.remove('active');
-            hudLog('left select → keep selection');
-          }
-          _wasInSelectMode = isInSelectMode;
-        } catch (_) {}
-      }
-      if (typeof drawControl.on === 'function') {
-        try { drawControl.on('mode-changed', syncGesturesToMode); }
-        catch (_) {}
-      }
-      if (td && typeof td.on === 'function') {
-        td.on('change', syncGesturesToMode);
-      }
-      syncGesturesToMode();
+      HGISWireModeAdapter({
+        td,
+        hudLog,
+        setDoubleClickZoom,
+        clearFirstVertex,
+        onModeChanged: (cb) => {
+          if (typeof drawControl.on === 'function') drawControl.on('mode-changed', cb);
+        },
+        resetSelectEditFlags: () => {
+          try { setSelectEditFlags(td, false); } catch (_) {}
+          const eb = document.getElementById('hgis-edit-btn');
+          if (eb) eb.classList.remove('active');
+        },
+      });
     } catch (e) {
       log.error('[HydraulicGIS] Échec d\'initialisation de terra-draw :', e);
       drawControl = null;
