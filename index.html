@@ -1402,9 +1402,7 @@
     saveState();
     if (patch && Object.prototype.hasOwnProperty.call(patch, 'showLabel')) {
       try { if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap(); } catch (_) {}
-    } else {
-      try { refreshTerraDrawStyles(); } catch (_) { try { map.triggerRepaint(); } catch (__) {} }
-      try { ensureOverlayLayerOrder(); } catch (_) {}
+      try { ensureOverlayLayerOrder(); map.triggerRepaint(); } catch (_) {}
     }
   }
 
@@ -2364,18 +2362,20 @@
         try {
           if (typeof installPerFeatureStyles === 'function') installPerFeatureStyles();
           const td2 = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
-          if (td2 && typeof td2.getMode === 'function' && typeof td2.setMode === 'function') {
-            const mode = td2.getMode() || 'static';
-            td2.setMode(mode);
+          if (td2 && typeof td2.getSnapshot === 'function' && typeof td2.addFeatures === 'function') {
+            const snap = td2.getSnapshot() || [];
+            if (snap.length) td2.addFeatures(snap);
           }
           map.triggerRepaint();
           requestAnimationFrame(() => { try { map.triggerRepaint(); } catch (_) {} });
         } catch (_) { try { map.triggerRepaint(); } catch (__) {} }
       };
-      // Hook the style refresh into our store.
       const _origSetStyle = setStyle;
       setStyle = function (id, patch) {
         _origSetStyle(id, patch);
+        if (!patch || !Object.prototype.hasOwnProperty.call(patch, 'showLabel')) {
+          try { refreshTerraDrawStyles(); ensureOverlayLayerOrder(); } catch (_) {}
+        }
       };
 
 
@@ -2679,6 +2679,7 @@
         function ingestTerraDrawFeature(terraId, tdFeature, ctx) {
           if (!tdFeature || !tdFeature.geometry) return null;
           const action = ctx && ctx.action;
+          const fromFinish = !!(ctx && ctx.fromFinish);
           const existing = findFeatureByTerraId(terraId);
           if (existing) {
             existing.geojson.geometry = tdFeature.geometry;
@@ -2687,16 +2688,16 @@
             notifyFeatures();
             return existing;
           }
-          // Do not ingest in-progress shapes (multi-tap line/polygon draws).
-          try {
-            const curMode = td && td.getMode && td.getMode();
+          // Only block in-progress shapes on the change/create path.
+          // finish always means the user completed the shape.
+          if (!fromFinish) {
             const fmode = tdFeature.properties && tdFeature.properties.mode;
             const isPoint = tdFeature.geometry.type === 'Point' || fmode === 'point';
-            if (curMode && curMode !== 'static' && curMode !== 'select' && !isPoint) {
-              return null;
-            }
-            if (!isPoint && detectFirstVertexCoord([tdFeature])) return null;
-          } catch (_) {}
+            if (!isPoint) return null;
+            try {
+              if (detectFirstVertexCoord([tdFeature])) return null;
+            } catch (_) {}
+          }
           if (action && action !== 'draw') {
             log.warn('[HydraulicGIS] ingest with action=' + action + ' but no row — creating');
           }
@@ -2734,7 +2735,7 @@
             const snap = td.getSnapshot();
             const f = snap.find(x => terraIdMatch(x.id, id));
             if (!f) return;
-            ingestTerraDrawFeature(id, f, ctx);
+            ingestTerraDrawFeature(id, f, { ...(ctx || {}), fromFinish: true, action: (ctx && ctx.action) || 'draw' });
           } catch (err) {
             log.error('[HydraulicGIS] error in finish handler:', err);
           }
@@ -2787,7 +2788,6 @@
               const ours = findFeatureByTerraId(terraId);
               if (!ours) { hudLog('  → not found in state'); return; }
               selectFeature(ours.id, { additive: false });
-              clearTerraDrawNativeSelection();
               hudLog('  → sel=[' + state.selectedIds.join(',') + ']');
             } catch (e) { hudLog('  ERR ' + e.message); }
           });
@@ -3371,6 +3371,7 @@
             <span>Afficher l'étiquette</span>
           </label>
         </div>
+        <button type="button" class="btn btn-solid" id="st-apply" style="margin-top:8px; width:100%;">Appliquer les styles</button>
       </div>`;
   }
 
@@ -3411,6 +3412,11 @@
     root.querySelector('#st-label')?.addEventListener('change', e => {
       const v = e.target.checked;
       state.selectedIds.forEach(id => setStyle(id, { showLabel: v }));
+      notifyUi();
+    });
+    root.querySelector('#st-apply')?.addEventListener('click', () => {
+      try { refreshTerraDrawStyles(); } catch (_) {}
+      try { syncFeaturesToMap(); } catch (_) {}
       notifyUi();
     });
   }
