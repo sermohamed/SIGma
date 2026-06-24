@@ -2573,60 +2573,214 @@
           updateHud(`change ${type} (${ids ? ids.length : 0})`);
         });
 
-        HGISWireTerraDrawAdapter({
-          td,
-          state,
-          log,
-          hudLog,
-          terraIdMatch,
-          kindFromGeom,
-          addFeature,
-          removeFeature,
-          selectFeature,
-          promptFeatureName,
-          computeMetrics,
-          notifyFeatures,
-          clearFirstVertex,
-          triggerRepaint: () => { try { map.triggerRepaint(); } catch (_) {} },
-          toggleButtonsWhenNoFeature: () => { try { drawControl.toggleButtonsWhenNoFeature(); } catch (_) {} },
-          ensureStaticMode: () => { try { if (td && typeof td.setMode === 'function') td.setMode('static'); } catch (_) {} },
-          forceYellowHalo: () => {
-            try { if (typeof syncSelectionHighlight === 'function') syncSelectionHighlight(); } catch (_) {}
-            try {
-              if (map.getLayer('app-selection-fill')) map.moveLayer('app-selection-fill');
-              if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
-              if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
-              if (map.getLayer('app-label')) map.moveLayer('app-label');
-            } catch (_) {}
-            try { map.triggerRepaint(); } catch (_) {}
-          },
-          ignoreTdSelect: true,
-          isMultiSelectMode: () => state.multiSelectMode === true,
-          isEditActive: () => {
-            const eb = document.getElementById('hgis-edit-btn');
-            return !!(eb && eb.classList.contains('active'));
-          },
+        const forceYellowHalo = () => {
+          try { if (typeof syncSelectionHighlight === 'function') syncSelectionHighlight(); } catch (_) {}
+          try {
+            if (map.getLayer('app-selection-fill')) map.moveLayer('app-selection-fill');
+            if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
+            if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
+            if (map.getLayer('app-label')) map.moveLayer('app-label');
+          } catch (_) {}
+          try { map.triggerRepaint(); } catch (_) {}
+        };
+
+        let _promptedTerraIdsFallback = new Set();
+        const findStoreFeatureByTerraIdFallback = (terraId) => state.features.find(f =>
+          f.geojson && f.geojson.properties && terraIdMatch(f.geojson.properties._terraId, terraId));
+        const findTdSnapshotFeatureFallback = (snapshot, terraId) =>
+          (snapshot || []).find(x => terraIdMatch(x.id, terraId));
+        const createStoreFeatureFromTdFallback = (terraId, tdFeature, ctxMode) => {
+          const mode = (tdFeature.properties && tdFeature.properties.mode) || ctxMode || '';
+          const kind = kindFromGeom(tdFeature.geometry, mode);
+          const newF = addFeature({
+            type: 'Feature',
+            geometry: tdFeature.geometry,
+            properties: { _terraId: terraId },
+          }, kind);
+          selectFeature(newF.id, { additive: false });
+          const tidKey = String(terraId);
+          if (!_promptedTerraIdsFallback.has(tidKey)) {
+            _promptedTerraIdsFallback.add(tidKey);
+            promptFeatureName(newF.id);
+          }
+          forceYellowHalo();
+          return newF;
+        };
+
+        try {
+          if (typeof HGISWireTerraDrawAdapter === 'function') {
+            HGISWireTerraDrawAdapter({
+              td,
+              state,
+              log,
+              hudLog,
+              terraIdMatch,
+              kindFromGeom,
+              addFeature,
+              removeFeature,
+              selectFeature,
+              promptFeatureName,
+              computeMetrics,
+              notifyFeatures,
+              clearFirstVertex,
+              triggerRepaint: () => { try { map.triggerRepaint(); } catch (_) {} },
+              toggleButtonsWhenNoFeature: () => { try { drawControl.toggleButtonsWhenNoFeature(); } catch (_) {} },
+              ensureStaticMode: () => { try { if (td && typeof td.setMode === 'function') td.setMode('static'); } catch (_) {} },
+              forceYellowHalo,
+              ignoreTdSelect: true,
+              isMultiSelectMode: () => state.multiSelectMode === true,
+              isEditActive: () => {
+                const eb = document.getElementById('hgis-edit-btn');
+                return !!(eb && eb.classList.contains('active'));
+              },
+            });
+          } else {
+            log.warn('[HydraulicGIS] HGISWireTerraDrawAdapter unavailable, fallback handlers active.');
+          }
+        } catch (err) {
+          log.warn('[HydraulicGIS] adapter wiring failed, fallback handlers active:', err);
+        }
+
+        try {
+          if (typeof HGISWireSelectionAdapter === 'function') {
+            HGISWireSelectionAdapter({
+              map,
+              td,
+              state,
+              log,
+              terraIdMatch,
+              notifyUi,
+              selectFeature,
+              forceYellowHalo,
+            });
+          } else {
+            log.warn('[HydraulicGIS] HGISWireSelectionAdapter unavailable, fallback handlers active.');
+          }
+        } catch (err) {
+          log.warn('[HydraulicGIS] selection adapter wiring failed, fallback handlers active:', err);
+        }
+
+        // Fallback handlers (kept intentionally redundant for cross-device robustness).
+        td.on('finish', (id, ctx) => {
+          try {
+            const snap = td.getSnapshot ? td.getSnapshot() : [];
+            const tf = findTdSnapshotFeatureFallback(snap, id);
+            if (!tf) return;
+            const existing = findStoreFeatureByTerraIdFallback(id);
+            if (existing) {
+              existing.geojson.geometry = tf.geometry;
+              existing.metrics = computeMetrics(existing.geojson, existing.kind);
+              existing.updatedAt = Date.now();
+              notifyFeatures();
+              forceYellowHalo();
+              return;
+            }
+            createStoreFeatureFromTdFallback(id, tf, ctx && ctx.mode);
+          } catch (_) {}
         });
 
-        HGISWireSelectionAdapter({
-          map,
-          td,
-          state,
-          log,
-          terraIdMatch,
-          notifyUi,
-          selectFeature,
-          forceYellowHalo: () => {
-            try { if (typeof syncSelectionHighlight === 'function') syncSelectionHighlight(); } catch (_) {}
-            try {
-              if (map.getLayer('app-selection-fill')) map.moveLayer('app-selection-fill');
-              if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
-              if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
-              if (map.getLayer('app-label')) map.moveLayer('app-label');
-            } catch (_) {}
-            try { map.triggerRepaint(); } catch (_) {}
-          },
+        td.on('change', (ids, type) => {
+          try {
+            if (type === 'delete') {
+              const banTerraIds = new Set((ids || []).map(String));
+              const toRemove = state.features
+                .filter(f => f.geojson && f.geojson.properties && banTerraIds.has(String(f.geojson.properties._terraId)))
+                .map(f => f.id);
+              toRemove.forEach(removeFeature);
+              return;
+            }
+            if (type !== 'create' && type !== 'update') return;
+            const snap = td.getSnapshot ? td.getSnapshot() : [];
+            let touched = 0;
+            for (const tid of (ids || [])) {
+              const tf = findTdSnapshotFeatureFallback(snap, tid);
+              if (!tf) continue;
+              const ours = findStoreFeatureByTerraIdFallback(tid);
+              if (ours) {
+                ours.geojson.geometry = tf.geometry;
+                ours.metrics = computeMetrics({ type: 'Feature', geometry: tf.geometry }, ours.kind);
+                ours.updatedAt = Date.now();
+                touched++;
+                continue;
+              }
+              const mode = (tf.properties && tf.properties.mode) || '';
+              if (type === 'create' && tf.geometry && tf.geometry.type === 'Point' && mode === 'point') {
+                createStoreFeatureFromTdFallback(tid, tf, mode);
+              }
+            }
+            if (touched) {
+              notifyFeatures();
+              forceYellowHalo();
+            }
+          } catch (_) {}
         });
+
+        // Backup pointerup/click selection path for all device types.
+        (function installSelectionFallback() {
+          const layersForPick = ['td-point', 'td-linestring', 'td-polygon', 'td-polygon-outline',
+            'app-derived-point', 'app-derived-line', 'app-derived-fill'];
+          const resolveOurIds = (point) => {
+            const layers = layersForPick.filter(id => map.getLayer(id));
+            if (!layers.length) return [];
+            const hits = map.queryRenderedFeatures(point, { layers });
+            const ourIds = [];
+            for (const hit of (hits || [])) {
+              const propId = hit.properties && hit.properties.id;
+              let ours = propId ? state.features.find(f => f.id === propId) : null;
+              if (!ours && hit.id != null) {
+                ours = findStoreFeatureByTerraIdFallback(hit.id);
+              }
+              if (ours && !ourIds.includes(ours.id)) ourIds.push(ours.id);
+            }
+            return ourIds;
+          };
+          const applyPick = (point) => {
+            let mode = 'static';
+            try {
+              if (td && typeof td.getMode === 'function') {
+                const m = td.getMode();
+                if (m) mode = m;
+              }
+            } catch (_) {}
+            if (mode !== 'select') return;
+            const ourIds = resolveOurIds(point);
+            if (ourIds.length === 0) {
+              if (!state.multiSelectMode && state.selectedIds.length > 0) {
+                state.selectedIds = [];
+                notifyUi();
+                forceYellowHalo();
+              }
+              return;
+            }
+            selectFeature(ourIds[0], { additive: state.multiSelectMode });
+            forceYellowHalo();
+          };
+
+          const canvas = map.getCanvas();
+          let down = null;
+          let suppressClick = false;
+          canvas.addEventListener('pointerdown', (ev) => {
+            if (!ev.isPrimary) return;
+            down = { x: ev.clientX, y: ev.clientY };
+          }, true);
+          canvas.addEventListener('pointerup', (ev) => {
+            if (!ev.isPrimary || !down) return;
+            const dx = ev.clientX - down.x;
+            const dy = ev.clientY - down.y;
+            down = null;
+            if (Math.sqrt(dx * dx + dy * dy) > 8) return;
+            try {
+              const rect = canvas.getBoundingClientRect();
+              applyPick({ x: ev.clientX - rect.left, y: ev.clientY - rect.top });
+              suppressClick = true;
+              setTimeout(() => { suppressClick = false; }, 250);
+            } catch (_) {}
+          }, true);
+          map.on('click', (e) => {
+            if (suppressClick) return;
+            applyPick(e.point);
+          });
+        })();
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
