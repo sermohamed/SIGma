@@ -2606,6 +2606,34 @@
           forceYellowHalo();
           return newF;
         };
+        const isCompletedTdFeatureFallback = (tdFeature) => {
+          if (!tdFeature || !tdFeature.geometry) return false;
+          const mode = (tdFeature.properties && tdFeature.properties.mode) || '';
+          const g = tdFeature.geometry;
+          if (mode === 'point') return g.type === 'Point';
+          if (g.type === 'LineString') {
+            if (!Array.isArray(g.coordinates) || g.coordinates.length < 2) return false;
+            const a = g.coordinates[0];
+            return g.coordinates.some(p => p && a && (p[0] !== a[0] || p[1] !== a[1]));
+          }
+          if (g.type === 'Polygon') {
+            if (!Array.isArray(g.coordinates) || !Array.isArray(g.coordinates[0]) || g.coordinates[0].length < 4) return false;
+            const ring = g.coordinates[0];
+            const first = ring[0];
+            let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+            for (const p of ring) {
+              if (!p) continue;
+              if (p[0] < minX) minX = p[0];
+              if (p[1] < minY) minY = p[1];
+              if (p[0] > maxX) maxX = p[0];
+              if (p[1] > maxY) maxY = p[1];
+            }
+            const spreadOk = (maxX - minX) > 1e-10 || (maxY - minY) > 1e-10;
+            const notAllSame = ring.some(p => p && first && (p[0] !== first[0] || p[1] !== first[1]));
+            return spreadOk && notAllSame;
+          }
+          return false;
+        };
 
         try {
           if (typeof HGISWireTerraDrawAdapter === 'function') {
@@ -2704,7 +2732,7 @@
                 continue;
               }
               const mode = (tf.properties && tf.properties.mode) || '';
-              if (type === 'create' && tf.geometry && tf.geometry.type === 'Point' && mode === 'point') {
+              if (type === 'create' && isCompletedTdFeatureFallback(tf)) {
                 createStoreFeatureFromTdFallback(tid, tf, mode);
               }
             }
