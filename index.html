@@ -1112,6 +1112,19 @@
     basemap: 'satellite',  // default: satellite view with city/road labels
     listeners: { features: [], ui: [] },
   };
+  const DRAW_ENGINE = (() => {
+    try {
+      const params = new URLSearchParams(window.location.search || '');
+      const fromQuery = (params.get('drawEngine') || '').trim().toLowerCase();
+      if (fromQuery === 'geoman' || fromQuery === 'terradraw') {
+        try { localStorage.setItem('hydraulic-gis:draw-engine', fromQuery); } catch (_) {}
+        return fromQuery;
+      }
+      const saved = (localStorage.getItem('hydraulic-gis:draw-engine') || '').trim().toLowerCase();
+      if (saved === 'geoman' || saved === 'terradraw') return saved;
+    } catch (_) {}
+    return 'terradraw';
+  })();
 
   // Persistance localStorage
   const STORAGE_KEY = 'hydraulic-gis:features:v1';
@@ -1560,6 +1573,8 @@
 
   // Terra-draw control
   let drawControl = null;
+  let _geomanModule = null;
+  let _geomanInstance = null;
 
   function installAppLayers() {
     if (!map.isStyleLoaded()) {
@@ -1877,8 +1892,252 @@
     }
   });
 
+  function mapGeomanShapeToTdMode(shape) {
+    const s = String(shape || '').toLowerCase();
+    if (s === 'marker') return 'point';
+    if (s === 'line') return 'linestring';
+    if (s === 'polygon') return 'polygon';
+    if (s === 'rectangle') return 'rectangle';
+    if (s === 'circle') return 'circle';
+    return 'polygon';
+  }
+
+  function mapTdModeToGeomanShape(mode) {
+    const m = String(mode || '').toLowerCase();
+    if (m === 'point') return 'marker';
+    if (m === 'linestring') return 'line';
+    if (m === 'polygon') return 'polygon';
+    if (m === 'rectangle') return 'rectangle';
+    if (m === 'circle') return 'circle';
+    return null;
+  }
+
+  function ensureGeomanCss() {
+    try {
+      if (document.getElementById('hgis-geoman-css')) return;
+      const link = document.createElement('link');
+      link.id = 'hgis-geoman-css';
+      link.rel = 'stylesheet';
+      link.href = 'https://unpkg.com/@geoman-io/maplibre-geoman-free/dist/maplibre-geoman.css';
+      document.head.appendChild(link);
+    } catch (_) {}
+  }
+
+  function createGeomanTdBridge() {
+    const listeners = { finish: [], change: [], select: [], deselect: [] };
+    let currentMode = 'static';
+    let previousSnapshot = new Map();
+    let previousSelection = new Set();
+
+    const fire = (name, ...args) => {
+      for (const cb of (listeners[name] || [])) {
+        try { cb(...args); } catch (_) {}
+      }
+    };
+
+    const toSnapshotFeature = (f) => {
+      const props = { ...(f.properties || {}) };
+      const mode = mapGeomanShapeToTdMode(props.shape);
+      props.mode = mode;
+      return {
+        id: String(f.id),
+        type: 'Feature',
+        geometry: f.geometry,
+        properties: props,
+      };
+    };
+
+    const getSnapshot = () => {
+      try {
+        if (!map.gm || !map.gm.features || typeof map.gm.features.exportGeoJson !== 'function') return [];
+        const fc = map.gm.features.exportGeoJson();
+        const features = (fc && fc.features) ? fc.features : [];
+        return features
+          .filter(x => x && x.geometry && x.id != null)
+          .map(toSnapshotFeature);
+      } catch (_) { return []; }
+    };
+
+    const syncSelectionForward = () => {
+      try {
+        if (!map.gm || !map.gm.features) return;
+        const next = new Set(Array.from(map.gm.features.selection || []).map(String));
+        if (next.size === 0 && previousSelection.size > 0) fire('deselect');
+        for (const id of next) {
+          if (!previousSelection.has(id)) fire('select', id);
+        }
+        previousSelection = next;
+      } catch (_) {}
+    };
+
+    const refreshAndEmit = (kindHint) => {
+      const nextSnap = getSnapshot();
+      const next = new Map(nextSnap.map(f => [String(f.id), f]));
+      const created = [];
+      const updated = [];
+      const deleted = [];
+
+      for (const [id, f] of next.entries()) {
+        if (!previousSnapshot.has(id)) created.push(id);
+        else {
+          const before = previousSnapshot.get(id);
+          try {
+            if (JSON.stringify(before.geometry) !== JSON.stringify(f.geometry)) updated.push(id);
+          } catch (_) { updated.push(id); }
+        }
+      }
+      for (const id of previousSnapshot.keys()) {
+        if (!next.has(id)) deleted.push(id);
+      }
+      previousSnapshot = next;
+
+      if (created.length) {
+        fire('change', created, 'create');
+        for (const id of created) {
+          const f = next.get(id);
+          fire('finish', id, { action: 'draw', mode: f && f.properties ? f.properties.mode : undefined });
+        }
+      }
+      if (updated.length) fire('change', updated, 'update');
+      if (deleted.length) fire('change', deleted, 'delete');
+      syncSelectionForward();
+      if (kindHint) updateHud('gm:' + kindHint);
+    };
+
+    map.on('gm:create', () => refreshAndEmit('create'));
+    map.on('gm:edit', () => refreshAndEmit('edit'));
+    map.on('gm:editend', () => refreshAndEmit('editend'));
+    map.on('gm:remove', () => refreshAndEmit('remove'));
+    map.on('gm:selection', () => syncSelectionForward());
+
+    return {
+      on: (name, cb) => {
+        if (!listeners[name]) listeners[name] = [];
+        listeners[name].push(cb);
+      },
+      getMode: () => currentMode,
+      setMode: async (mode) => {
+        const m = String(mode || 'static').toLowerCase();
+        currentMode = m;
+        if (!map.gm) return;
+        try {
+          if (m === 'static') {
+            if (typeof map.gm.disableDraw === 'function') await map.gm.disableDraw();
+            if (typeof map.gm.disableAllModes === 'function') await map.gm.disableAllModes();
+            return;
+          }
+          if (m === 'select') {
+            if (typeof map.gm.disableDraw === 'function') await map.gm.disableDraw();
+            if (typeof map.gm.enableGlobalEditMode === 'function') await map.gm.enableGlobalEditMode();
+            return;
+          }
+          const shape = mapTdModeToGeomanShape(m);
+          if (shape && typeof map.gm.enableDraw === 'function') await map.gm.enableDraw(shape);
+        } catch (_) {}
+      },
+      getSnapshot,
+      addFeatures: async (features) => {
+        if (!map.gm || !map.gm.features || typeof map.gm.features.importGeoJsonFeature !== 'function') return;
+        for (const f of (features || [])) {
+          if (!f || !f.geometry) continue;
+          try {
+            const shape = mapTdModeToGeomanShape((f.properties && f.properties.mode) || kindFromGeom(f.geometry));
+            await map.gm.features.importGeoJsonFeature({
+              type: 'Feature',
+              id: String(f.id),
+              geometry: f.geometry,
+              properties: { ...(f.properties || {}), shape },
+            });
+          } catch (_) {}
+        }
+        refreshAndEmit('import');
+      },
+      removeFeatures: async (ids) => {
+        if (!map.gm || !map.gm.features || typeof map.gm.features.delete !== 'function') return;
+        for (const id of (ids || [])) {
+          try { await map.gm.features.delete(String(id)); } catch (_) {}
+        }
+        refreshAndEmit('delete');
+      },
+      selectFeature: (id) => {
+        try {
+          if (map.gm && map.gm.features && typeof map.gm.features.setSelection === 'function') {
+            map.gm.features.setSelection([String(id)], true);
+          }
+        } catch (_) {}
+      },
+      deselect: () => {
+        try {
+          if (map.gm && map.gm.features && typeof map.gm.features.clearSelection === 'function') {
+            map.gm.features.clearSelection();
+          }
+        } catch (_) {}
+      },
+    };
+  }
+
+  async function installDrawControlGeoman() {
+    if (drawControl && (drawControl.engine === 'geoman' || drawControl.engine === 'terradraw')) return;
+    drawControl = { engine: 'geoman-loading', getTerraDrawInstance: () => null };
+    ensureGeomanCss();
+    try {
+      if (!_geomanModule) {
+        _geomanModule = await import('https://unpkg.com/@geoman-io/maplibre-geoman-free/dist/maplibre-geoman.es.js');
+      }
+      const GeomanCtor = _geomanModule && _geomanModule.Geoman;
+      if (!GeomanCtor) throw new Error('Geoman constructor not found');
+      _geomanInstance = new GeomanCtor(map, {
+        settings: {
+          useControlsUi: true,
+          controlsPosition: 'top-left',
+        },
+      });
+      if (typeof _geomanInstance.waitForGeomanLoaded === 'function') {
+        await _geomanInstance.waitForGeomanLoaded();
+      }
+      const bridge = createGeomanTdBridge();
+      drawControl = {
+        engine: 'geoman',
+        getTerraDrawInstance: () => bridge,
+        toggleButtonsWhenNoFeature: () => {},
+        on: () => {},
+      };
+      try {
+        const tdLike = drawControl.getTerraDrawInstance();
+        if (tdLike && state.features.length && typeof tdLike.addFeatures === 'function') {
+          const gmFeatures = state.features
+            .filter(f => f.geojson && f.geojson.geometry)
+            .map(f => {
+              let tid = f.geojson.properties && f.geojson.properties._terraId;
+              if (!tid) {
+                tid = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : 'restored-' + f.id;
+                f.geojson.properties = { ...(f.geojson.properties || {}), _terraId: tid };
+              }
+              const tdMode = ({ point: 'point', line: 'linestring', polygon: 'polygon',
+                                rectangle: 'rectangle', circle: 'circle' })[f.kind] || 'polygon';
+              return {
+                id: tid,
+                type: 'Feature',
+                geometry: f.geojson.geometry,
+                properties: { ...(f.geojson.properties || {}), mode: tdMode },
+              };
+            });
+          if (gmFeatures.length) await tdLike.addFeatures(gmFeatures);
+        }
+      } catch (_) {}
+      log.info('[HydraulicGIS] Geoman bridge installed.');
+    } catch (err) {
+      log.warn('[HydraulicGIS] Geoman init failed, keep TerraDraw path:', err);
+      drawControl = null;
+    }
+  }
+
   function installDrawControl() {
     if (drawControl) return;
+    if (DRAW_ENGINE === 'geoman') {
+      installDrawControlGeoman();
+      return;
+    }
     if (typeof MaplibreTerradrawControl === 'undefined' ||
         !MaplibreTerradrawControl.MaplibreTerradrawControl) {
       log.warn('[HydraulicGIS] terra-draw n\'a pas pu être chargé — le dessin est désactivé. Le reste de l\'application fonctionne.');
