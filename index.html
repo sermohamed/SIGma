@@ -1625,7 +1625,7 @@
       id: 'app-label', type: 'symbol', source: SRC_LABELS,
       layout: {
         'text-field': ['get', 'name'],
-        'text-font': ['Open Sans Bold', 'Open Sans Regular', 'Arial Unicode MS Bold'],
+        'text-font': ['Arial Unicode MS Regular'],
         'text-size': 12,
         // Minimal offset: label sits very close to the geometry centroid.
         'text-offset': [0, 0.6],
@@ -1663,7 +1663,10 @@
   }
 
   function syncFeaturesToMap() {
-    if (!map.isStyleLoaded()) return;
+    if (!map.isStyleLoaded()) {
+      requestAnimationFrame(() => { try { if (map.isStyleLoaded()) syncFeaturesToMap(); } catch (_) {} });
+      return;
+    }
     if (!map.getSource(SRC_LABELS)) {
       try { installAppLayers(); }
       catch (err) { log.warn('[HydraulicGIS] layer reinstall failed:', err); return; }
@@ -1685,7 +1688,7 @@
       } else if (f.metrics && f.metrics.areaSquareMeters) {
         priority = Math.round(Math.log10(Math.max(1, f.metrics.areaSquareMeters)) * 15);
       }
-      const props = { id: f.id, name: f.name, priority };
+      const props = { id: f.id, name: (f.name && String(f.name).trim()) ? f.name : nameForKind(f.kind), priority };
       if (f.kind === 'point') {
         labels.push({ type: 'Feature', geometry: f.geojson.geometry, properties: props });
       } else if (f.kind === 'line') {
@@ -1720,6 +1723,9 @@
     }
 
     try {
+      if (map.getLayer('app-label')) {
+        try { map.setLayoutProperty('app-label', 'text-font', ['Arial Unicode MS Regular']); } catch (_) {}
+      }
       map.getSource(SRC_LABELS).setData({ type: 'FeatureCollection', features: labels });
     } catch (err) {
       log.warn('[HydraulicGIS] label setData failed:', err);
@@ -2594,6 +2600,7 @@
             } catch (_) {}
             try { map.triggerRepaint(); } catch (_) {}
           },
+          ignoreTdSelect: true,
           isMultiSelectMode: () => state.multiSelectMode === true,
           isEditActive: () => {
             const eb = document.getElementById('hgis-edit-btn');
@@ -2606,8 +2613,19 @@
           td,
           state,
           log,
+          terraIdMatch,
           notifyUi,
           selectFeature,
+          forceYellowHalo: () => {
+            try { if (typeof syncSelectionHighlight === 'function') syncSelectionHighlight(); } catch (_) {}
+            try {
+              if (map.getLayer('app-selection-fill')) map.moveLayer('app-selection-fill');
+              if (map.getLayer('app-selection-line')) map.moveLayer('app-selection-line');
+              if (map.getLayer('app-selection-point')) map.moveLayer('app-selection-point');
+              if (map.getLayer('app-label')) map.moveLayer('app-label');
+            } catch (_) {}
+            try { map.triggerRepaint(); } catch (_) {}
+          },
         });
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
@@ -3942,7 +3960,7 @@
           id: 'app-contour-labels-symbol', type: 'symbol', source: 'app-contour-labels',
           layout: {
             'text-field': ['concat', ['to-string', ['round', ['get', 'elevation']]], ' m'],
-            'text-font': ['Noto Sans Bold', 'Noto Sans Regular', 'Open Sans Bold', 'Arial Unicode MS Regular'],
+            'text-font': ['Arial Unicode MS Regular'],
             'text-padding': 2,
           },
           paint: {
