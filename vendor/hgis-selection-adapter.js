@@ -22,6 +22,19 @@
       });
     }
 
+    function resolveStoreFeatureFromHit(hit) {
+      if (!hit) return null;
+      var propId = hit.properties && hit.properties.id;
+      if (propId) {
+        var byStoreId = (state.features || []).find(function (f) { return f.id === propId; });
+        if (byStoreId) return byStoreId;
+      }
+      var terraLikeId = (hit.properties && (hit.properties._terraId || hit.properties.__gm_id || hit.properties.gm_id || hit.properties.id));
+      if (terraLikeId == null) terraLikeId = hit.id;
+      if (terraLikeId != null) return findStoreFeatureByTerraId(terraLikeId);
+      return null;
+    }
+
     function handleSelectionAtPoint(point) {
       try {
         var mode = 'static';
@@ -36,16 +49,18 @@
         var layers = ['td-point', 'td-linestring', 'td-polygon', 'td-polygon-outline',
           'app-derived-point', 'app-derived-line', 'app-derived-fill']
           .filter(function (id) { return map.getLayer(id); });
-        if (layers.length === 0) return;
-        var hits = map.queryRenderedFeatures(point, { layers: layers });
+        var hits = [];
+        if (layers.length) {
+          hits = map.queryRenderedFeatures(point, { layers: layers });
+        }
+        // Engine-agnostic fallback (Geoman and any future renderer).
+        if (!hits.length) {
+          hits = map.queryRenderedFeatures(point);
+        }
 
         var ourIds = [];
         (hits || []).forEach(function (hit) {
-          var propId = hit.properties && hit.properties.id;
-          var ours = (state.features || []).find(function (f) { return propId && f.id === propId; });
-          if (!ours && hit.id != null) {
-            ours = findStoreFeatureByTerraId(hit.id);
-          }
+          var ours = resolveStoreFeatureFromHit(hit);
           if (ours && !ourIds.includes(ours.id)) ourIds.push(ours.id);
         });
 

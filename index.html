@@ -1113,15 +1113,12 @@
     listeners: { features: [], ui: [] },
   };
   const DRAW_ENGINE = (() => {
+    // Keep TerraDraw as the stable default. Geoman is available only when
+    // explicitly requested via URL query (for controlled testing).
     try {
       const params = new URLSearchParams(window.location.search || '');
       const fromQuery = (params.get('drawEngine') || '').trim().toLowerCase();
-      if (fromQuery === 'geoman' || fromQuery === 'terradraw') {
-        try { localStorage.setItem('hydraulic-gis:draw-engine', fromQuery); } catch (_) {}
-        return fromQuery;
-      }
-      const saved = (localStorage.getItem('hydraulic-gis:draw-engine') || '').trim().toLowerCase();
-      if (saved === 'geoman' || saved === 'terradraw') return saved;
+      if (fromQuery === 'geoman' || fromQuery === 'terradraw') return fromQuery;
     } catch (_) {}
     return 'terradraw';
   })();
@@ -1131,7 +1128,7 @@
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
-      if (raw) state.features = JSON.parse(raw);
+      if (raw) state.features = normalizeLoadedFeatures(JSON.parse(raw));
     } catch (e) { log.warn('Échec de chargement :', e); }
     // Restore basemap preference
     try {
@@ -1202,6 +1199,35 @@
     fill: '#3aa0ff', fillOpacity: 0.30,
     visible: true, showLabel: true,
   };
+
+  function normalizeLoadedFeatures(items) {
+    if (!Array.isArray(items)) return [];
+    const now = Date.now();
+    return items.map((f) => {
+      if (!f || !f.geojson || !f.geojson.geometry) return null;
+      const kind = f.kind || kindFromGeom(f.geojson.geometry, f.geojson && f.geojson.properties && f.geojson.properties.mode);
+      const style = { ...DEFAULT_STYLE, ...(f.style || {}) };
+      if (typeof style.showLabel !== 'boolean') style.showLabel = true;
+      if (typeof style.visible !== 'boolean') style.visible = true;
+      const name = (typeof f.name === 'string' && f.name.trim()) ? f.name : null;
+      const geojson = {
+        type: 'Feature',
+        geometry: f.geojson.geometry,
+        properties: { ...(f.geojson.properties || {}) },
+      };
+      return {
+        ...f,
+        id: f.id || newId('f'),
+        name: name || nameForKind(kind),
+        kind,
+        geojson,
+        style,
+        metrics: f.metrics || computeMetrics(geojson, kind),
+        createdAt: f.createdAt || now,
+        updatedAt: f.updatedAt || now,
+      };
+    }).filter(Boolean);
+  }
 
   function newId(prefix = 'f') {
     const ts = Date.now().toString(36);
@@ -1326,9 +1352,21 @@
         if (td) {
           const ids = state.features
             .map(f => f.geojson && f.geojson.properties && f.geojson.properties._terraId)
-            .filter(Boolean);
-          if (ids.length && typeof td.removeFeatures === 'function') {
-            td.removeFeatures(ids);
+            .filter(Boolean)
+            .map(String);
+          // Belt-and-braces: also remove everything currently in the draw engine
+          // snapshot so stale renderer-only shapes are wiped too.
+          if (typeof td.getSnapshot === 'function') {
+            try {
+              const snap = td.getSnapshot() || [];
+              for (const sf of snap) {
+                if (sf && sf.id != null) ids.push(String(sf.id));
+              }
+            } catch (_) {}
+          }
+          const uniqueIds = Array.from(new Set(ids));
+          if (uniqueIds.length && typeof td.removeFeatures === 'function') {
+            td.removeFeatures(uniqueIds);
           }
         }
       } catch (err) { log.warn('[HydraulicGIS] removeFeatures failed:', err); }
@@ -3006,17 +3044,34 @@
         (function installSelectionFallback() {
           const layersForPick = ['td-point', 'td-linestring', 'td-polygon', 'td-polygon-outline',
             'app-derived-point', 'app-derived-line', 'app-derived-fill'];
+          const resolveStoreFeatureFromHit = (hit) => {
+            if (!hit) return null;
+            const propId = hit.properties && hit.properties.id;
+            if (propId) {
+              const byStoreId = state.features.find(f => f.id === propId);
+              if (byStoreId) return byStoreId;
+            }
+            const terraLikeId =
+              (hit.properties && (hit.properties._terraId || hit.properties.__gm_id || hit.properties.gm_id || hit.properties.id)) ??
+              hit.id;
+            if (terraLikeId != null) {
+              return findStoreFeatureByTerraIdFallback(terraLikeId);
+            }
+            return null;
+          };
           const resolveOurIds = (point) => {
             const layers = layersForPick.filter(id => map.getLayer(id));
-            if (!layers.length) return [];
-            const hits = map.queryRenderedFeatures(point, { layers });
+            let hits = [];
+            if (layers.length) {
+              hits = map.queryRenderedFeatures(point, { layers });
+            }
+            // Engine-agnostic fallback (covers Geoman layer IDs too).
+            if (!hits.length) {
+              hits = map.queryRenderedFeatures(point);
+            }
             const ourIds = [];
             for (const hit of (hits || [])) {
-              const propId = hit.properties && hit.properties.id;
-              let ours = propId ? state.features.find(f => f.id === propId) : null;
-              if (!ours && hit.id != null) {
-                ours = findStoreFeatureByTerraIdFallback(hit.id);
-              }
+              const ours = resolveStoreFeatureFromHit(hit);
               if (ours && !ourIds.includes(ours.id)) ourIds.push(ours.id);
             }
             return ourIds;
