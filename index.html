@@ -1732,8 +1732,9 @@
     // the feature's metric: log of length (lines) or sqrt of area (polys).
     const labels = [];
     for (const f of state.features) {
-      if (!f.style || !f.style.visible) continue;
-      if (!f.style.showLabel) continue;
+      if (!f.style || f.style.visible === false) continue;
+      // Treat missing showLabel as enabled so legacy saved features still show labels.
+      if (f.style && f.style.showLabel === false) continue;
       // Priority: 0 (low) → 100 (high). We use metric magnitude so a 1km
       // line wins over a 10m line, and a 1ha polygon wins over a 1m² one.
       let priority = 0;
@@ -2939,8 +2940,9 @@
           return false;
         };
 
+        const USE_TD_ADAPTERS = false;
         try {
-          if (typeof HGISWireTerraDrawAdapter === 'function') {
+          if (USE_TD_ADAPTERS && typeof HGISWireTerraDrawAdapter === 'function') {
             HGISWireTerraDrawAdapter({
               td,
               state,
@@ -2974,7 +2976,7 @@
         }
 
         try {
-          if (typeof HGISWireSelectionAdapter === 'function') {
+          if (USE_TD_ADAPTERS && typeof HGISWireSelectionAdapter === 'function') {
             HGISWireSelectionAdapter({
               map,
               td,
@@ -3004,6 +3006,13 @@
               existing.metrics = computeMetrics(existing.geojson, existing.kind);
               existing.updatedAt = Date.now();
               notifyFeatures();
+              // If a feature was created from a change event path before finish,
+              // still ensure the naming prompt appears once at completion.
+              const tidKey = String(id);
+              if (!_promptedTerraIdsFallback.has(tidKey)) {
+                _promptedTerraIdsFallback.add(tidKey);
+                promptFeatureName(existing.id);
+              }
               forceYellowHalo();
               return;
             }
@@ -3035,10 +3044,8 @@
                 touched++;
                 continue;
               }
-              const mode = (tf.properties && tf.properties.mode) || '';
-              if (type === 'create' && isCompletedTdFeatureFallback(tf)) {
-                createStoreFeatureFromTdFallback(tid, tf, mode);
-              }
+              // Do not create store rows from change/create. We only create on finish
+              // so naming popup timing is stable across point/line/polygon/circle.
             }
             if (touched) {
               notifyFeatures();
@@ -3091,7 +3098,11 @@
                 if (m) mode = m;
               }
             } catch (_) {}
-            if (mode !== 'select') return;
+            // Some TerraDraw builds report mode inconsistently on mobile.
+            // Allow select picking when select button is visibly active.
+            const selectBtnActive = !!document.querySelector('.maplibregl-terradraw-add-select-button.active');
+            const selectionModeLike = (mode === 'select') || (mode === 'static' && selectBtnActive);
+            if (!selectionModeLike) return;
             const ourIds = resolveOurIds(point);
             if (ourIds.length === 0) {
               if (!state.multiSelectMode && state.selectedIds.length > 0) {
@@ -3102,6 +3113,10 @@
               return;
             }
             selectFeature(ourIds[0], { additive: state.multiSelectMode });
+            // Keep app yellow halo as the sole selection cue.
+            try {
+              if (td && typeof td.deselect === 'function') td.deselect();
+            } catch (_) {}
             forceYellowHalo();
           };
 
