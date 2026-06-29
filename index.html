@@ -889,7 +889,7 @@
       <p id="prompt-msg" style="margin-bottom:10px;">Choisissez un nom ou laissez le nom par défaut.</p>
       <input type="text" id="prompt-input" class="field" style="width:100%; box-sizing:border-box; margin-bottom:14px;" />
       <div class="actions">
-        <button class="btn btn-ghost" onclick="ui.closePrompt()">Annuler</button>
+        <button class="btn btn-ghost" onclick="ui.closePrompt(true)">Annuler</button>
         <button class="btn btn-solid" id="prompt-ok">OK</button>
       </div>
     </div>
@@ -3020,6 +3020,24 @@
           } catch (_) {}
         });
 
+        // Keep app selection state in sync with the native arrow select path,
+        // then immediately suppress TerraDraw's blue highlight.
+        td.on('select', (terraId) => {
+          try {
+            const ours = findStoreFeatureByTerraIdFallback(terraId);
+            if (ours) {
+              selectFeature(ours.id, { additive: state.multiSelectMode });
+            }
+            if (typeof td.deselect === 'function') {
+              try { td.deselect(); } catch (_) {}
+              requestAnimationFrame(() => { try { td.deselect(); } catch (_) {} });
+              setTimeout(() => { try { td.deselect(); } catch (_) {} }, 0);
+              setTimeout(() => { try { td.deselect(); } catch (_) {} }, 32);
+            }
+            forceYellowHalo();
+          } catch (_) {}
+        });
+
         td.on('change', (ids, type) => {
           try {
             if (type === 'delete') {
@@ -3145,6 +3163,24 @@
             applyPick(e.point);
           });
         })();
+
+        // Bridge native "delete-selection" button to the app's selectedIds,
+        // because we intentionally suppress TerraDraw's native blue selection.
+        if (!window.__hgisDeleteSelectionBridgeInstalled) {
+          window.__hgisDeleteSelectionBridgeInstalled = true;
+          document.addEventListener('click', (ev) => {
+            const btn = ev.target && ev.target.closest && ev.target.closest('.maplibregl-terradraw-delete-selection-button');
+            if (!btn) return;
+            if (!state.selectedIds || state.selectedIds.length === 0) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+            const toDelete = state.selectedIds.slice();
+            toDelete.forEach(removeFeature);
+            state.selectedIds = [];
+            notifyUi();
+            forceYellowHalo();
+          }, true);
+        }
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
@@ -3273,6 +3309,7 @@
 
   /* ═══ 6. UI / PANELS ════════════════════════════════════════════════════════ */
   const ui = window.ui = {
+    _promptGuardUntil: 0,
     isMobile() {
       return window.matchMedia('(max-width: 1024px)').matches
           || (window.matchMedia('(pointer: coarse)').matches && window.innerWidth <= 1280);
@@ -3318,14 +3355,16 @@
       const okBtn = document.getElementById('prompt-ok');
       const onSubmit = () => {
         const v = input.value.trim();
-        this.closePrompt();
+        this.closePrompt(true);
         if (typeof onOk === 'function') onOk(v);
       };
       okBtn.onclick = onSubmit;
       input.onkeydown = (e) => {
         if (e.key === 'Enter') { e.preventDefault(); onSubmit(); }
-        else if (e.key === 'Escape') { this.closePrompt(); }
+        else if (e.key === 'Escape') { this.closePrompt(true); }
       };
+      // Guard against synthetic trailing taps right after drawing on mobile.
+      this._promptGuardUntil = Date.now() + 320;
       document.getElementById('prompt-bg').classList.add('visible');
       // Defer focus + select-all so iOS shows the keyboard.
       // On iOS Safari, keyboard only opens from a direct user-gesture handler.
@@ -3338,7 +3377,8 @@
         } catch (_) {}
       }, 80);
     },
-    closePrompt() {
+    closePrompt(force = false) {
+      if (!force && Date.now() < (this._promptGuardUntil || 0)) return;
       document.getElementById('prompt-bg').classList.remove('visible');
       const input = document.getElementById('prompt-input');
       if (input) input.onkeydown = null;
