@@ -20,7 +20,7 @@
     }
 
     function promptFeatureNameOnce(terraId, featureId) {
-      var tidKey = String(terraId);
+      var tidKey = (terraId == null) ? String(featureId) : String(terraId);
       if (promptedTerraIds.has(tidKey)) return;
       promptedTerraIds.add(tidKey);
       config.promptFeatureName(featureId);
@@ -61,6 +61,12 @@
           if (p[1] < minY) minY = p[1];
           if (p[0] > maxX) maxX = p[0];
           if (p[1] > maxY) maxY = p[1];
+        }
+        // Circle mode starts with a tiny seed polygon after first tap. Do not
+        // treat that as completed; wait for a user-sized circle.
+        if (mode === 'circle') {
+          var areaSeed = Math.abs((maxX - minX) * (maxY - minY));
+          if (areaSeed < 1e-8) return false;
         }
         var spreadOk = (maxX - minX) > 1e-10 || (maxY - minY) > 1e-10;
         var notAllSame = ring.some(function (p) { return p && first && (p[0] !== first[0] || p[1] !== first[1]); });

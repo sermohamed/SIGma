@@ -1678,7 +1678,8 @@
       id: 'app-label', type: 'symbol', source: SRC_LABELS,
       layout: {
         'text-field': ['get', 'name'],
-        'text-font': ['Arial Unicode MS Regular'],
+        // Use a map glyph stack that is actually available across basemaps.
+        'text-font': ['Open Sans Regular', 'Arial Unicode MS Regular'],
         'text-size': 12,
         // Minimal offset: label sits very close to the geometry centroid.
         'text-offset': [0, 0.6],
@@ -1777,7 +1778,7 @@
 
     try {
       if (map.getLayer('app-label')) {
-        try { map.setLayoutProperty('app-label', 'text-font', ['Arial Unicode MS Regular']); } catch (_) {}
+        try { map.setLayoutProperty('app-label', 'text-font', ['Open Sans Regular', 'Arial Unicode MS Regular']); } catch (_) {}
       }
       map.getSource(SRC_LABELS).setData({ type: 'FeatureCollection', features: labels });
     } catch (err) {
@@ -2895,7 +2896,7 @@
             properties: { _terraId: terraId },
           }, kind);
           selectFeature(newF.id, { additive: false });
-          const tidKey = String(terraId);
+          const tidKey = (terraId == null) ? String(newF.id) : String(terraId);
           if (!_promptedTerraIdsFallback.has(tidKey)) {
             _promptedTerraIdsFallback.add(tidKey);
             promptFeatureName(newF.id);
@@ -2925,6 +2926,12 @@
               if (p[0] > maxX) maxX = p[0];
               if (p[1] > maxY) maxY = p[1];
             }
+            // Circle mode starts with a tiny seed polygon after first tap.
+            // Ignore that seed so the naming popup appears only after finish.
+            if (mode === 'circle') {
+              const areaSeed = Math.abs((maxX - minX) * (maxY - minY));
+              if (areaSeed < 1e-8) return false;
+            }
             const spreadOk = (maxX - minX) > 1e-10 || (maxY - minY) > 1e-10;
             const notAllSame = ring.some(p => p && first && (p[0] !== first[0] || p[1] !== first[1]));
             return spreadOk && notAllSame;
@@ -2952,7 +2959,7 @@
               toggleButtonsWhenNoFeature: () => { try { drawControl.toggleButtonsWhenNoFeature(); } catch (_) {} },
               ensureStaticMode: () => { try { if (td && typeof td.setMode === 'function') td.setMode('static'); } catch (_) {} },
               forceYellowHalo,
-              ignoreTdSelect: true,
+              ignoreTdSelect: false,
               isMultiSelectMode: () => state.multiSelectMode === true,
               isEditActive: () => {
                 const eb = document.getElementById('hgis-edit-btn');
