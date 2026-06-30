@@ -7,7 +7,7 @@
   <meta name="mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-  <title>Hydraulic GIS</title>
+  <title>Atlas GIS</title>
 
   <!-- MapLibre GL JS (carte) — versions stables vérifiées depuis docs officielles -->
   <link rel="stylesheet" href="vendor/maplibre-gl.css" />
@@ -741,7 +741,7 @@
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
       <nav id="sidebar-rail">
-        <div class="brand" title="Hydraulic GIS">
+        <div class="brand" title="Atlas GIS">
           <svg width="24" height="24" viewBox="0 0 32 32">
             <path d="M8 22c2 0 3-2 4-4s2-4 4-4 3 2 4 4 2 4 4 4" stroke="#3aa0ff" stroke-width="2.5" fill="none" stroke-linecap="round"/>
             <circle cx="16" cy="14" r="2" fill="#3aa0ff"/>
@@ -929,7 +929,7 @@
     return { info: safe('info'), warn: safe('warn'), error: safe('error'), log: safe('log') };
   })();
 
-  log.info('%c[HydraulicGIS] v11 — 2026-05-05', 'color:#3aa0ff;font-weight:bold;font-size:12px');
+  log.info('%c[AtlasGIS] v11 — 2026-05-05', 'color:#3aa0ff;font-weight:bold;font-size:12px');
 
   /* ─── iOS Safari pinch-zoom prevention ─────────────────────────────────
      Apple ignores `user-scalable=no` in viewport meta since iOS 10. A user
@@ -1368,9 +1368,20 @@
           if (uniqueIds.length && typeof td.removeFeatures === 'function') {
             td.removeFeatures(uniqueIds);
           }
+          try { if (typeof td.setMode === 'function') td.setMode('static'); } catch (_) {}
+          try { if (typeof td.deselect === 'function') td.deselect(); } catch (_) {}
         }
       } catch (err) { log.warn('[HydraulicGIS] removeFeatures failed:', err); }
     }
+    // Clean renderer-owned derived/label layers that are not solely tied to
+    // state.features to avoid leftovers after bulk delete.
+    try { if (map.getSource(SRC_LABELS)) map.getSource(SRC_LABELS).setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
+    try { if (map.getSource('app-contour-labels')) map.getSource('app-contour-labels').setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
+    try { if (map.getSource('app-contours')) map.getSource('app-contours').setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
+    try { if (typeof syncDerivedLayer === 'function') syncDerivedLayer(); } catch (_) {}
+    // Reset toolbar states so the dropdown doesn't stay stuck in select mode.
+    try { document.querySelectorAll('.maplibregl-terradraw-add-select-button').forEach(b => b.classList.remove('active')); } catch (_) {}
+    try { const eb = document.getElementById('hgis-edit-btn'); if (eb) eb.classList.remove('active'); } catch (_) {}
     state.features = [];
     state.selectedIds = [];
     notifyFeatures();
@@ -2882,6 +2893,18 @@
           } catch (_) {}
           try { map.triggerRepaint(); } catch (_) {}
         };
+        const suppressNativeBlueHalo = () => {
+          try {
+            if (!td || typeof td.deselect !== 'function') return;
+            try { td.deselect(); } catch (_) {}
+            requestAnimationFrame(() => { try { td.deselect(); } catch (_) {} });
+            setTimeout(() => { try { td.deselect(); } catch (_) {} }, 0);
+            setTimeout(() => { try { td.deselect(); } catch (_) {} }, 32);
+            setTimeout(() => { try { td.deselect(); } catch (_) {} }, 96);
+            setTimeout(() => { try { td.deselect(); } catch (_) {} }, 180);
+            setTimeout(() => { try { td.deselect(); } catch (_) {} }, 300);
+          } catch (_) {}
+        };
 
         let _promptedTerraIdsFallback = new Set();
         const findStoreFeatureByTerraIdFallback = (terraId) => state.features.find(f =>
@@ -2902,6 +2925,7 @@
             _promptedTerraIdsFallback.add(tidKey);
             promptFeatureName(newF.id);
           }
+          try { syncFeaturesToMap(); } catch (_) {}
           forceYellowHalo();
           return newF;
         };
@@ -3013,6 +3037,7 @@
                 _promptedTerraIdsFallback.add(tidKey);
                 promptFeatureName(existing.id);
               }
+              try { syncFeaturesToMap(); } catch (_) {}
               forceYellowHalo();
               return;
             }
@@ -3028,12 +3053,7 @@
             if (ours) {
               selectFeature(ours.id, { additive: state.multiSelectMode });
             }
-            if (typeof td.deselect === 'function') {
-              try { td.deselect(); } catch (_) {}
-              requestAnimationFrame(() => { try { td.deselect(); } catch (_) {} });
-              setTimeout(() => { try { td.deselect(); } catch (_) {} }, 0);
-              setTimeout(() => { try { td.deselect(); } catch (_) {} }, 32);
-            }
+            suppressNativeBlueHalo();
             forceYellowHalo();
           } catch (_) {}
         });
@@ -3132,9 +3152,7 @@
             }
             selectFeature(ourIds[0], { additive: state.multiSelectMode });
             // Keep app yellow halo as the sole selection cue.
-            try {
-              if (td && typeof td.deselect === 'function') td.deselect();
-            } catch (_) {}
+            suppressNativeBlueHalo();
             forceYellowHalo();
           };
 
@@ -3181,6 +3199,13 @@
             forceYellowHalo();
           }, true);
         }
+        map.on('click', () => {
+          try {
+            const m = td && typeof td.getMode === 'function' ? td.getMode() : 'static';
+            const selectBtnActive = !!document.querySelector('.maplibregl-terradraw-add-select-button.active');
+            if (m === 'select' || selectBtnActive) suppressNativeBlueHalo();
+          } catch (_) {}
+        });
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
@@ -3657,8 +3682,8 @@
         </div>
         <div>
           <label class="checkbox-row">
-            <input type="checkbox" id="st-label" ${ref.showLabel ? 'checked' : ''} />
-            <span>Afficher l'étiquette</span>
+            <input type="checkbox" id="st-label" ${ref.showLabel === false ? 'checked' : ''} />
+            <span>Masquer l'étiquette</span>
           </label>
         </div>
         <button type="button" class="btn btn-solid" id="st-apply" style="width:100%;">Appliquer</button>
@@ -3700,7 +3725,9 @@
       root.querySelector('#st-opacity-val').textContent = Math.round(v * 100) + '%';
     });
     root.querySelector('#st-label')?.addEventListener('change', e => {
-      apply({ showLabel: e.target.checked });
+      // Checked = hide label, unchecked = show label.
+      apply({ showLabel: !e.target.checked });
+      try { if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap(); } catch (_) {}
     });
     root.querySelector('#st-apply')?.addEventListener('click', () => {
       try { if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap(); } catch (_) {}
@@ -5614,7 +5641,7 @@
       }
       saveAs(new Blob([rows.join('\n')], { type: 'text/csv' }), 'projet.csv');
     } else if (format === 'txt') {
-      const lines = [`Hydraulic GIS — Export ${new Date().toISOString()}`, `Objets : ${features.length}`, '─'.repeat(60)];
+      const lines = [`Atlas GIS — Export ${new Date().toISOString()}`, `Objets : ${features.length}`, '─'.repeat(60)];
       for (const f of features) {
         lines.push(`[${f.kind}] ${f.name}`);
         if (f.metrics.lengthMeters !== undefined) lines.push(`  Longueur : ${formatDistance(f.metrics.lengthMeters)}`);
@@ -5634,7 +5661,7 @@
     const xml = ['<?xml version="1.0" encoding="UTF-8"?>'];
     xml.push('<kml xmlns="http://www.opengis.net/kml/2.2">');
     xml.push('<Document>');
-    xml.push('<name>Hydraulic GIS export</name>');
+    xml.push('<name>Atlas GIS export</name>');
     for (const feat of (fc.features || [])) {
       const props = feat.properties || {};
       const name = props.name ? `<name>${escXml(props.name)}</name>` : '';
