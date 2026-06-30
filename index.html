@@ -1338,8 +1338,15 @@
       const stillHasContours = state.features.some(f2 =>
         f2.geojson && f2.geojson.properties && f2.geojson.properties._derivedKind === 'contours');
       const labSrc = map.getSource('app-contour-labels');
-      if (labSrc && !stillHasContours) {
-        labSrc.setData({ type: 'FeatureCollection', features: [] });
+      if (labSrc) {
+        if (!stillHasContours) {
+          labSrc.setData({ type: 'FeatureCollection', features: [] });
+        } else if (f && f.geojson && f.geojson.properties && f.geojson.properties._derivedKind === 'contours') {
+          // Remove only labels owned by the deleted contour feature.
+          const cur = labSrc._data || { type: 'FeatureCollection', features: [] };
+          const kept = (cur.features || []).filter(x => !(x && x.properties && x.properties.contourOwnerId === id));
+          labSrc.setData({ type: 'FeatureCollection', features: kept });
+        }
       }
       const ctrSrc = map.getSource('app-contours');
       if (ctrSrc && !stillHasContours) {
@@ -1348,6 +1355,7 @@
     } catch (_) {}
     notifyFeatures();
     notifyUi();
+    try { if (map.getSource('app-selection')) map.getSource('app-selection').setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
     // Ensure renderer-derived overlays cannot remain as ghosts after deletion.
     try { if (typeof syncDerivedLayer === 'function') syncDerivedLayer(); } catch (_) {}
     try { if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap(); } catch (_) {}
@@ -2942,6 +2950,7 @@
           } catch (_) {}
         };
         const enforceYellowSelection = () => {
+          try { setSelectEditFlags(td, false); } catch (_) {}
           suppressNativeBlueHalo();
           forceYellowHalo();
         };
@@ -4220,7 +4229,7 @@
           elevationLabelFeatures.push({
             type: 'Feature',
             geometry: { type: 'Point', coordinates: mid },
-            properties: { elevation: lf.properties.level },
+            properties: { elevation: lf.properties.level, contourOwnerId: newF.id },
           });
         }
         ensureContourLabelsLayer();
