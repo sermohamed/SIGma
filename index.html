@@ -734,9 +734,43 @@
     @media (max-width: 600px) {
       #draw-toggle-btn { width: 44px; height: 44px; padding: 0; }
     }
+
+    /* Sharper, more intuitive draw tool buttons inside the drawer:
+       consistent square targets, crisp dividers, clear states. */
+    #draw-drawer .maplibregl-ctrl-group button {
+      width: 44px !important;
+      height: 44px !important;
+      border-bottom: 1px solid var(--line) !important;
+      transition: background-color 0.12s ease, filter 0.12s ease;
+    }
+    #draw-drawer .maplibregl-ctrl-group button:last-child {
+      border-bottom: none !important;
+    }
+    #draw-drawer .maplibregl-ctrl-group button:active {
+      background-color: rgba(58,160,255,0.18) !important;
+    }
+
+    /* Build badge — confirms which deployed version is loaded. */
+    #build-badge {
+      position: fixed;
+      left: 8px;
+      bottom: calc(6px + env(safe-area-inset-bottom));
+      z-index: 50;
+      font-family: 'JetBrains Mono', ui-monospace, monospace;
+      font-size: 10px;
+      line-height: 1;
+      color: var(--ink-2);
+      background: rgba(11,15,20,0.55);
+      border: 1px solid var(--line);
+      padding: 3px 6px;
+      border-radius: 4px;
+      pointer-events: none;
+      user-select: none;
+    }
   </style>
 </head>
 <body>
+  <div id="build-badge">Atlas GIS · build 2026-06-30·h</div>
   <div id="app">
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
@@ -1362,58 +1396,61 @@
   }
 
   function clearAllFeatures() {
-    // Remove from terra-draw too.
-    if (drawControl) {
-      try {
-        const td = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
-        if (td) {
-          const ids = state.features
-            .map(f => f.geojson && f.geojson.properties && f.geojson.properties._terraId)
-            .filter(Boolean)
-            .map(String);
-          // Belt-and-braces: also remove everything currently in the draw engine
-          // snapshot so stale renderer-only shapes are wiped too.
-          if (typeof td.getSnapshot === 'function') {
-            try {
-              const snap = td.getSnapshot() || [];
-              for (const sf of snap) {
-                if (sf && sf.id != null) ids.push(String(sf.id));
-              }
-            } catch (_) {}
-          }
-          const uniqueIds = Array.from(new Set(ids));
-          if (uniqueIds.length && typeof td.removeFeatures === 'function') {
-            td.removeFeatures(uniqueIds);
-            // Retry one frame later for ids that were still in selected/edit state.
-            requestAnimationFrame(() => {
-              try { td.removeFeatures(uniqueIds); } catch (_) {}
-            });
-          }
-          try { if (typeof td.setMode === 'function') td.setMode('static'); } catch (_) {}
-          try { if (typeof td.deselect === 'function') td.deselect(); } catch (_) {}
+    // Collect every renderer id BEFORE we empty the store.
+    let uniqueIds = [];
+    try {
+      const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
+      if (td) {
+        const ids = state.features
+          .map(f => f.geojson && f.geojson.properties && f.geojson.properties._terraId)
+          .filter(Boolean)
+          .map(String);
+        if (typeof td.getSnapshot === 'function') {
+          try {
+            (td.getSnapshot() || []).forEach(sf => { if (sf && sf.id != null) ids.push(String(sf.id)); });
+          } catch (_) {}
         }
-      } catch (err) { log.warn('[HydraulicGIS] removeFeatures failed:', err); }
+        uniqueIds = Array.from(new Set(ids));
+      }
+    } catch (_) {}
+
+    // 1) Empty the app store FIRST so any re-render (syncDerivedLayer /
+    //    syncFeaturesToMap) cannot re-spawn a feature it still sees in state.
+    //    This was the root cause of contour "ghosts" surviving Tout effacer.
+    state.features = [];
+    state.selectedIds = [];
+    state.selectActive = false;
+
+    // 2) Remove from TerraDraw after leaving select/edit so nothing is locked.
+    try {
+      const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
+      if (td) {
+        try { if (typeof td.setMode === 'function') td.setMode('static'); } catch (_) {}
+        try { if (typeof td.deselect === 'function') td.deselect(); } catch (_) {}
+        if (uniqueIds.length && typeof td.removeFeatures === 'function') {
+          try { td.removeFeatures(uniqueIds); } catch (_) {}
+          requestAnimationFrame(() => { try { td.removeFeatures(uniqueIds); } catch (_) {} });
+        }
+      }
+    } catch (err) { log.warn('[HydraulicGIS] removeFeatures failed:', err); }
+
+    // 3) Empty every app-owned source so no overlay can linger as a ghost.
+    for (const srcId of [SRC_LABELS, 'app-selection', 'app-derived', 'app-contour-labels', 'app-contours']) {
+      try { const s = map.getSource(srcId); if (s) s.setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
     }
-    // Clean renderer-owned derived/label layers that are not solely tied to
-    // state.features to avoid leftovers after bulk delete.
-    try { if (map.getSource(SRC_LABELS)) map.getSource(SRC_LABELS).setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
-    try { if (map.getSource('app-selection')) map.getSource('app-selection').setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
-    try { if (map.getSource('app-contour-labels')) map.getSource('app-contour-labels').setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
-    try { if (map.getSource('app-contours')) map.getSource('app-contours').setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
     try { if (typeof syncDerivedLayer === 'function') syncDerivedLayer(); } catch (_) {}
-    // Reset toolbar states so the dropdown doesn't stay stuck in select mode.
+
+    // 4) Reset toolbar visual state so the menu can't stay stuck.
     try {
       const clearSelectActive = () => {
         try { document.querySelectorAll('.maplibregl-terradraw-add-select-button').forEach(b => b.classList.remove('active')); } catch (_) {}
       };
       clearSelectActive();
       setTimeout(clearSelectActive, 0);
-      setTimeout(clearSelectActive, 64);
-      setTimeout(clearSelectActive, 180);
+      setTimeout(clearSelectActive, 120);
     } catch (_) {}
     try { const eb = document.getElementById('hgis-edit-btn'); if (eb) eb.classList.remove('active'); } catch (_) {}
-    state.features = [];
-    state.selectedIds = [];
+
     notifyFeatures();
     notifyUi();
   }
@@ -2434,6 +2471,9 @@
                                     cls.includes('add-polygon') || cls.includes('add-rectangle') ||
                                     cls.includes('add-circle');
               if (isDrawModeBtn) {
+                // Leaving selection: turn the app select toggle off so taps draw.
+                try { state.selectActive = false; } catch (_) {}
+                try { document.querySelectorAll('.maplibregl-terradraw-add-select-button').forEach(b => b.classList.remove('active')); } catch (_) {}
                 setTimeout(() => {
                   drawer.classList.add('collapsed');
                   toggle.classList.remove('active');
@@ -2477,7 +2517,11 @@
         let installed = false;
         const tryInstall = () => {
           if (installed) return false;
-          const ctrlGroup = document.querySelector('.maplibregl-ctrl-group');
+          // IMPORTANT: target the DRAW drawer's control group specifically.
+          // document.querySelector('.maplibregl-ctrl-group') could match the
+          // top-right geolocate control group, which is why the Edit button
+          // used to appear on the right side of the screen.
+          const ctrlGroup = document.querySelector('#draw-drawer .maplibregl-ctrl-group');
           if (!ctrlGroup) return false;
           if (ctrlGroup.querySelector('#hgis-edit-btn')) { installed = true; return true; }
 
@@ -2529,7 +2573,11 @@
             } catch (err) { hudLog('Edit ERR ' + err.message); }
           };
 
-          ctrlGroup.appendChild(editBtn);
+          // Place Edit directly UNDER the Select button and ON TOP of Delete:
+          // insert it right before the native delete-selection button.
+          const delBtn = ctrlGroup.querySelector('.maplibregl-terradraw-delete-selection-button');
+          if (delBtn) ctrlGroup.insertBefore(editBtn, delBtn);
+          else ctrlGroup.appendChild(editBtn);
           installed = true;
           hudLog('Edit button installed');
           return true;
@@ -3187,7 +3235,8 @@
             // Some TerraDraw builds report mode inconsistently on mobile.
             // Allow select picking when select button is visibly active.
             const selectBtnActive = !!document.querySelector('.maplibregl-terradraw-add-select-button.active');
-            const selectionModeLike = (mode === 'select') || (mode === 'static' && selectBtnActive);
+            const drawingNow = !!mode && mode !== 'static' && mode !== 'select';
+            const selectionModeLike = !drawingNow && (state.selectActive === true || mode === 'select' || selectBtnActive);
             if (!selectionModeLike) return;
             const ourIds = resolveOurIds(point);
             if (ourIds.length === 0) {
@@ -3253,22 +3302,27 @@
             if (m === 'select' || selectBtnActive) enforceYellowSelection();
           } catch (_) {}
         });
-        // Mirror the old "N-2" behavior: when arrow-select is activated,
-        // keep edit flags disabled and repeatedly suppress native selection paint.
-        if (!window.__hgisSelectBtnBridgeInstalled) {
-          window.__hgisSelectBtnBridgeInstalled = true;
+        // Selection WITHOUT TerraDraw's blue highlight: the select button is a
+        // pure app toggle. TerraDraw stays in 'static' so it never paints its
+        // native blue selection — the yellow app halo is the only selection cue,
+        // exactly like selecting from the Calques panel. This also means a
+        // selected feature is never locked inside TerraDraw's select/edit state,
+        // so deleting it removes it cleanly (no ghost left on the map).
+        if (!window.__hgisSelectToggleInstalled) {
+          window.__hgisSelectToggleInstalled = true;
+          if (typeof state.selectActive !== 'boolean') state.selectActive = false;
           document.addEventListener('click', (ev) => {
             const btn = ev.target && ev.target.closest && ev.target.closest('.maplibregl-terradraw-add-select-button');
             if (!btn) return;
-            const apply = () => {
-              try { setSelectEditFlags(td, false); } catch (_) {}
-              enforceYellowSelection();
-            };
-            apply();
-            setTimeout(apply, 0);
-            setTimeout(apply, 32);
-            setTimeout(apply, 96);
-            setTimeout(apply, 220);
+            // Fully take over the button: block TerraDraw from entering select mode.
+            ev.preventDefault();
+            ev.stopImmediatePropagation();
+            state.selectActive = !state.selectActive;
+            btn.classList.toggle('active', state.selectActive);
+            try { if (typeof td.setMode === 'function') td.setMode('static'); } catch (_) {}
+            try { if (typeof td.deselect === 'function') td.deselect(); } catch (_) {}
+            try { setSelectEditFlags(td, false); } catch (_) {}
+            forceYellowHalo();
           }, true);
         }
       } else {
