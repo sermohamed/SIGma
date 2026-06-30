@@ -1339,9 +1339,16 @@
       if (labSrc && !stillHasContours) {
         labSrc.setData({ type: 'FeatureCollection', features: [] });
       }
+      const ctrSrc = map.getSource('app-contours');
+      if (ctrSrc && !stillHasContours) {
+        ctrSrc.setData({ type: 'FeatureCollection', features: [] });
+      }
     } catch (_) {}
     notifyFeatures();
     notifyUi();
+    // Ensure renderer-derived overlays cannot remain as ghosts after deletion.
+    try { if (typeof syncDerivedLayer === 'function') syncDerivedLayer(); } catch (_) {}
+    try { if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap(); } catch (_) {}
   }
 
   function clearAllFeatures() {
@@ -1380,7 +1387,15 @@
     try { if (map.getSource('app-contours')) map.getSource('app-contours').setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
     try { if (typeof syncDerivedLayer === 'function') syncDerivedLayer(); } catch (_) {}
     // Reset toolbar states so the dropdown doesn't stay stuck in select mode.
-    try { document.querySelectorAll('.maplibregl-terradraw-add-select-button').forEach(b => b.classList.remove('active')); } catch (_) {}
+    try {
+      const clearSelectActive = () => {
+        try { document.querySelectorAll('.maplibregl-terradraw-add-select-button').forEach(b => b.classList.remove('active')); } catch (_) {}
+      };
+      clearSelectActive();
+      setTimeout(clearSelectActive, 0);
+      setTimeout(clearSelectActive, 64);
+      setTimeout(clearSelectActive, 180);
+    } catch (_) {}
     try { const eb = document.getElementById('hgis-edit-btn'); if (eb) eb.classList.remove('active'); } catch (_) {}
     state.features = [];
     state.selectedIds = [];
@@ -2905,6 +2920,10 @@
             setTimeout(() => { try { td.deselect(); } catch (_) {} }, 300);
           } catch (_) {}
         };
+        const enforceYellowSelection = () => {
+          suppressNativeBlueHalo();
+          forceYellowHalo();
+        };
 
         let _promptedTerraIdsFallback = new Set();
         const findStoreFeatureByTerraIdFallback = (terraId) => state.features.find(f =>
@@ -3053,8 +3072,7 @@
             if (ours) {
               selectFeature(ours.id, { additive: state.multiSelectMode });
             }
-            suppressNativeBlueHalo();
-            forceYellowHalo();
+            enforceYellowSelection();
           } catch (_) {}
         });
 
@@ -3152,8 +3170,7 @@
             }
             selectFeature(ourIds[0], { additive: state.multiSelectMode });
             // Keep app yellow halo as the sole selection cue.
-            suppressNativeBlueHalo();
-            forceYellowHalo();
+            enforceYellowSelection();
           };
 
           const canvas = map.getCanvas();
@@ -3196,16 +3213,34 @@
             toDelete.forEach(removeFeature);
             state.selectedIds = [];
             notifyUi();
-            forceYellowHalo();
+            enforceYellowSelection();
           }, true);
         }
         map.on('click', () => {
           try {
             const m = td && typeof td.getMode === 'function' ? td.getMode() : 'static';
             const selectBtnActive = !!document.querySelector('.maplibregl-terradraw-add-select-button.active');
-            if (m === 'select' || selectBtnActive) suppressNativeBlueHalo();
+            if (m === 'select' || selectBtnActive) enforceYellowSelection();
           } catch (_) {}
         });
+        // Mirror the old "N-2" behavior: when arrow-select is activated,
+        // keep edit flags disabled and repeatedly suppress native selection paint.
+        if (!window.__hgisSelectBtnBridgeInstalled) {
+          window.__hgisSelectBtnBridgeInstalled = true;
+          document.addEventListener('click', (ev) => {
+            const btn = ev.target && ev.target.closest && ev.target.closest('.maplibregl-terradraw-add-select-button');
+            if (!btn) return;
+            const apply = () => {
+              try { setSelectEditFlags(td, false); } catch (_) {}
+              enforceYellowSelection();
+            };
+            apply();
+            setTimeout(apply, 0);
+            setTimeout(apply, 32);
+            setTimeout(apply, 96);
+            setTimeout(apply, 220);
+          }, true);
+        }
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
@@ -3382,6 +3417,9 @@
         const v = input.value.trim();
         this.closePrompt(true);
         if (typeof onOk === 'function') onOk(v);
+        // Keep labels/live map state synced immediately after naming.
+        try { if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap(); } catch (_) {}
+        try { map.triggerRepaint(); } catch (_) {}
       };
       okBtn.onclick = onSubmit;
       input.onkeydown = (e) => {
