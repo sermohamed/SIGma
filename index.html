@@ -1145,6 +1145,8 @@
   function notifyFeatures() {
     saveState();
     state.listeners.features.forEach(fn => fn());
+    // Redundant live sync for mobile browsers where listener timing can lag.
+    try { if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap(); } catch (_) {}
   }
   /* Like notifyFeatures, but doesn't trigger UI re-render. Used for style
      changes from active inputs (sliders, color pickers) where re-rendering
@@ -1374,6 +1376,10 @@
           const uniqueIds = Array.from(new Set(ids));
           if (uniqueIds.length && typeof td.removeFeatures === 'function') {
             td.removeFeatures(uniqueIds);
+            // Retry one frame later for ids that were still in selected/edit state.
+            requestAnimationFrame(() => {
+              try { td.removeFeatures(uniqueIds); } catch (_) {}
+            });
           }
           try { if (typeof td.setMode === 'function') td.setMode('static'); } catch (_) {}
           try { if (typeof td.deselect === 'function') td.deselect(); } catch (_) {}
@@ -1383,6 +1389,7 @@
     // Clean renderer-owned derived/label layers that are not solely tied to
     // state.features to avoid leftovers after bulk delete.
     try { if (map.getSource(SRC_LABELS)) map.getSource(SRC_LABELS).setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
+    try { if (map.getSource('app-selection')) map.getSource('app-selection').setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
     try { if (map.getSource('app-contour-labels')) map.getSource('app-contour-labels').setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
     try { if (map.getSource('app-contours')) map.getSource('app-contours').setData({ type: 'FeatureCollection', features: [] }); } catch (_) {}
     try { if (typeof syncDerivedLayer === 'function') syncDerivedLayer(); } catch (_) {}
@@ -2573,11 +2580,20 @@
         try { td2.setModeStyles('rectangle',  polyStyles); } catch (e) { log.warn('setModeStyles rectangle failed', e); }
         try { td2.setModeStyles('circle',     polyStyles); } catch (e) { log.warn('setModeStyles circle failed', e); }
         try { td2.setModeStyles('point',      pointStyles); } catch (e) { log.warn('setModeStyles point failed', e); }
-        // Apply the SAME styles to the select-mode so features keep
-        // their user-configured color when selected (instead of turning
-        // terra-draw's default blue #3f97e0). The yellow halo from the
-        // app-selection layer is the visual indicator of selection.
-        try { td2.setModeStyles('select', { ...lineStyles, ...polyStyles, ...pointStyles }); }
+        // Force select-mode visuals to yellow so native TD never appears blue.
+        const selectStyles = {
+          lineStringColor: '#fbc412',
+          lineStringWidth: 5,
+          fillColor: '#fbc412',
+          outlineColor: '#fbc412',
+          outlineWidth: 4,
+          fillOpacity: 0.22,
+          pointColor: '#fbc412',
+          pointWidth: 10,
+          pointOutlineColor: '#ffffff',
+          pointOutlineWidth: 2,
+        };
+        try { td2.setModeStyles('select', selectStyles); }
         catch (e) { log.warn('setModeStyles select failed', e); }
         log.info('[HydraulicGIS] per-feature style resolvers installed.');
       }
@@ -2908,6 +2924,11 @@
           } catch (_) {}
           try { map.triggerRepaint(); } catch (_) {}
         };
+        const refreshLabelsNow = () => {
+          try { if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap(); } catch (_) {}
+          requestAnimationFrame(() => { try { if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap(); } catch (_) {} });
+          setTimeout(() => { try { if (typeof syncFeaturesToMap === 'function') syncFeaturesToMap(); } catch (_) {} }, 0);
+        };
         const suppressNativeBlueHalo = () => {
           try {
             if (!td || typeof td.deselect !== 'function') return;
@@ -2944,7 +2965,7 @@
             _promptedTerraIdsFallback.add(tidKey);
             promptFeatureName(newF.id);
           }
-          try { syncFeaturesToMap(); } catch (_) {}
+          refreshLabelsNow();
           forceYellowHalo();
           return newF;
         };
@@ -3056,7 +3077,7 @@
                 _promptedTerraIdsFallback.add(tidKey);
                 promptFeatureName(existing.id);
               }
-              try { syncFeaturesToMap(); } catch (_) {}
+              refreshLabelsNow();
               forceYellowHalo();
               return;
             }
