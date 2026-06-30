@@ -749,6 +749,38 @@
     #draw-drawer .maplibregl-ctrl-group button:active {
       background-color: rgba(58,160,255,0.18) !important;
     }
+    /* Active state for our custom Select toggle. */
+    #draw-drawer .maplibregl-ctrl-group #hgis-select-btn.active {
+      background-color: var(--brand) !important;
+      color: #fff !important;
+    }
+    /* Edit + Delete shown as CHILDREN of the Select button. Collapsed by
+       default; revealed only while selection is active. */
+    #hgis-select-children {
+      display: flex;
+      flex-direction: column;
+      max-height: 0;
+      overflow: hidden;
+      opacity: 0;
+      transition: max-height 0.18s ease, opacity 0.15s ease;
+    }
+    #hgis-select-children.open {
+      max-height: 120px;
+      opacity: 1;
+    }
+    #draw-drawer .maplibregl-ctrl-group button.hgis-child-btn {
+      border-left: 3px solid var(--brand) !important;
+      background-color: rgba(58,160,255,0.06) !important;
+    }
+    #draw-drawer .maplibregl-ctrl-group button.hgis-child-btn.active {
+      background-color: rgba(58,160,255,0.22) !important;
+    }
+    #draw-drawer .maplibregl-ctrl-group button.hgis-child-danger {
+      border-left-color: var(--danger) !important;
+    }
+    #draw-drawer .maplibregl-ctrl-group button.hgis-child-danger:active {
+      background-color: rgba(239,90,90,0.20) !important;
+    }
 
     /* Build badge — confirms which deployed version is loaded. */
     #build-badge {
@@ -770,7 +802,7 @@
   </style>
 </head>
 <body>
-  <div id="build-badge">Atlas GIS · build 2026-06-30·h</div>
+  <div id="build-badge">Atlas GIS · build 2026-06-30·i</div>
   <div id="app">
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
@@ -1442,12 +1474,7 @@
 
     // 4) Reset toolbar visual state so the menu can't stay stuck.
     try {
-      const clearSelectActive = () => {
-        try { document.querySelectorAll('.maplibregl-terradraw-add-select-button').forEach(b => b.classList.remove('active')); } catch (_) {}
-      };
-      clearSelectActive();
-      setTimeout(clearSelectActive, 0);
-      setTimeout(clearSelectActive, 120);
+      if (typeof window.__hgisSetSelectActive === 'function') window.__hgisSetSelectActive(false);
     } catch (_) {}
     try { const eb = document.getElementById('hgis-edit-btn'); if (eb) eb.classList.remove('active'); } catch (_) {}
 
@@ -2472,8 +2499,10 @@
                                     cls.includes('add-circle');
               if (isDrawModeBtn) {
                 // Leaving selection: turn the app select toggle off so taps draw.
-                try { state.selectActive = false; } catch (_) {}
-                try { document.querySelectorAll('.maplibregl-terradraw-add-select-button').forEach(b => b.classList.remove('active')); } catch (_) {}
+                try {
+                  if (typeof window.__hgisSetSelectActive === 'function') window.__hgisSetSelectActive(false);
+                  else state.selectActive = false;
+                } catch (_) {}
                 setTimeout(() => {
                   drawer.classList.add('collapsed');
                   toggle.classList.remove('active');
@@ -2513,32 +2542,58 @@
       //
       // No DOM games, no capture-phase listeners, no cloneNode. Just a
       // single button appended to the ctrl group with a plain onclick.
-      function installMultiSelectButton() {
+      // ─── Custom selection controls ─────────────────────────────────────
+      // We own selection entirely (no native TerraDraw select mode), so the
+      // yellow app halo is the only selection cue and nothing gets locked in
+      // TerraDraw's select/edit state. The native Select + Delete buttons are
+      // hidden; we expose our own Select toggle with Edit + Delete as CHILD
+      // buttons that appear underneath it only while selection is active.
+      function installSelectionControls() {
         let installed = false;
         const tryInstall = () => {
-          if (installed) return false;
-          // IMPORTANT: target the DRAW drawer's control group specifically.
-          // document.querySelector('.maplibregl-ctrl-group') could match the
-          // top-right geolocate control group, which is why the Edit button
-          // used to appear on the right side of the screen.
+          if (installed) return true;
           const ctrlGroup = document.querySelector('#draw-drawer .maplibregl-ctrl-group');
           if (!ctrlGroup) return false;
-          if (ctrlGroup.querySelector('#hgis-edit-btn')) { installed = true; return true; }
+          if (ctrlGroup.querySelector('#hgis-select-btn')) { installed = true; return true; }
 
-          const editSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
+          const hideNative = () => {
+            ctrlGroup.querySelectorAll('.maplibregl-terradraw-add-select-button, .maplibregl-terradraw-delete-selection-button')
+              .forEach(b => { b.style.display = 'none'; });
+          };
+          hideNative();
+
+          const selectSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
+              <path d="M3 3l7.5 18 2.5-7.5L20.5 11 3 3z"/>
+            </svg>`;
+          const editSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
               <path d="M12 20h9"/>
               <path d="M16.5 3.5a2.121 2.121 0 013 3L7 19l-4 1 1-4L16.5 3.5z"/>
             </svg>`;
+          const delSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
+              <path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13"/>
+            </svg>`;
 
-          // Only an Edit button. Multi-select removed per user spec —
-          // in select mode every tap already toggles add/remove (see
-          // td.on("select") handler which calls toggleSelect()).
+          // Parent Select toggle.
+          const selectBtn = document.createElement('button');
+          selectBtn.id = 'hgis-select-btn';
+          selectBtn.type = 'button';
+          selectBtn.title = 'Sélectionner';
+          selectBtn.setAttribute('aria-label', 'Activer la sélection');
+          selectBtn.className = 'maplibregl-terradraw-add-control hgis-custom-btn';
+          selectBtn.style.cssText = 'background-image:none; background-color:transparent;';
+          selectBtn.innerHTML = selectSvg;
+
+          // Child container (Edit + Delete), shown only while selecting.
+          const children = document.createElement('div');
+          children.id = 'hgis-select-children';
+
+          // Edit child — keep id 'hgis-edit-btn' so existing references work.
           const editBtn = document.createElement('button');
           editBtn.id = 'hgis-edit-btn';
           editBtn.type = 'button';
           editBtn.title = 'Éditer (déplacer les sommets)';
           editBtn.setAttribute('aria-label', 'Éditer la sélection');
-          editBtn.className = 'maplibregl-terradraw-add-control hgis-custom-btn';
+          editBtn.className = 'maplibregl-terradraw-add-control hgis-custom-btn hgis-child-btn';
           editBtn.style.cssText = 'background-image:none; background-color:transparent;';
           editBtn.innerHTML = editSvg;
           editBtn.onclick = (ev) => {
@@ -2555,14 +2610,14 @@
               }
               if (state.selectedIds.length === 0) {
                 ui.confirm('Aucune sélection',
-                  "Sélectionnez d'abord un objet (bouton Sélectionner + tap), puis touchez Éditer.", () => {});
+                  "Sélectionnez d'abord un objet (tap directement dessus), puis touchez Éditer.", () => {});
                 return;
               }
               const firstId = state.selectedIds[0];
               const ours = state.features.find(f => f.id === firstId);
               if (!ours || !ours.geojson.properties._terraId) {
                 ui.confirm('Édition impossible',
-                  "Cet objet dérivé (buffer/intersection) ne peut pas être édité.", () => {});
+                  "Cet objet dérivé (buffer/intersection/courbes) ne peut pas être édité.", () => {});
                 return;
               }
               setSelectEditFlags(td2, true);
@@ -2573,19 +2628,65 @@
             } catch (err) { hudLog('Edit ERR ' + err.message); }
           };
 
-          // Place Edit directly UNDER the Select button and ON TOP of Delete:
-          // insert it right before the native delete-selection button.
-          const delBtn = ctrlGroup.querySelector('.maplibregl-terradraw-delete-selection-button');
-          if (delBtn) ctrlGroup.insertBefore(editBtn, delBtn);
-          else ctrlGroup.appendChild(editBtn);
+          // Delete child — removes the currently selected feature(s).
+          const delBtn = document.createElement('button');
+          delBtn.id = 'hgis-del-btn';
+          delBtn.type = 'button';
+          delBtn.title = 'Supprimer la sélection';
+          delBtn.setAttribute('aria-label', 'Supprimer la sélection');
+          delBtn.className = 'maplibregl-terradraw-add-control hgis-custom-btn hgis-child-btn hgis-child-danger';
+          delBtn.style.cssText = 'background-image:none; background-color:transparent;';
+          delBtn.innerHTML = delSvg;
+          delBtn.onclick = (ev) => {
+            if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+            if (!state.selectedIds.length) {
+              ui.confirm('Aucune sélection', "Sélectionnez d'abord un objet à supprimer.", () => {});
+              return;
+            }
+            const toDelete = state.selectedIds.slice();
+            ui.confirm('Supprimer ?',
+              `Supprimer définitivement ${toDelete.length} objet${toDelete.length > 1 ? 's' : ''} sélectionné${toDelete.length > 1 ? 's' : ''} ?`,
+              () => {
+                toDelete.forEach(removeFeature);
+                state.selectedIds = [];
+                notifyUi();
+                forceYellowHalo();
+              });
+          };
+
+          children.appendChild(editBtn);
+          children.appendChild(delBtn);
+
+          const setSelectActive = (on) => {
+            state.selectActive = !!on;
+            selectBtn.classList.toggle('active', state.selectActive);
+            children.classList.toggle('open', state.selectActive);
+            if (!state.selectActive) {
+              try { setSelectEditFlags(td, false); } catch (_) {}
+              editBtn.classList.remove('active');
+            }
+            try { if (typeof td.setMode === 'function' && td.getMode && td.getMode() !== 'select') td.setMode('static'); } catch (_) {}
+            forceYellowHalo();
+          };
+          window.__hgisSetSelectActive = setSelectActive;
+
+          selectBtn.onclick = (ev) => {
+            if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+            setSelectActive(!state.selectActive);
+          };
+
+          ctrlGroup.appendChild(selectBtn);
+          ctrlGroup.appendChild(children);
           installed = true;
-          hudLog('Edit button installed');
+          // Re-hide native buttons in case the library re-rendered them.
+          [0, 120, 350, 900].forEach(d => setTimeout(hideNative, d));
+          hudLog('selection controls installed');
           return true;
         };
         const delays = [0, 50, 150, 400, 900, 1800];
         for (const d of delays) setTimeout(tryInstall, d);
       }
-      installMultiSelectButton();
+      installSelectionControls();
 
       // ─── Per-feature style injection ─────────────────────────────────
       // terra-draw's `setModeStyles` accepts FUNCTIONS for style values
@@ -3295,36 +3396,12 @@
             enforceYellowSelection();
           }, true);
         }
+        // Keep the yellow halo on top whenever selection is active.
         map.on('click', () => {
           try {
-            const m = td && typeof td.getMode === 'function' ? td.getMode() : 'static';
-            const selectBtnActive = !!document.querySelector('.maplibregl-terradraw-add-select-button.active');
-            if (m === 'select' || selectBtnActive) enforceYellowSelection();
+            if (state.selectActive === true) enforceYellowSelection();
           } catch (_) {}
         });
-        // Selection WITHOUT TerraDraw's blue highlight: the select button is a
-        // pure app toggle. TerraDraw stays in 'static' so it never paints its
-        // native blue selection — the yellow app halo is the only selection cue,
-        // exactly like selecting from the Calques panel. This also means a
-        // selected feature is never locked inside TerraDraw's select/edit state,
-        // so deleting it removes it cleanly (no ghost left on the map).
-        if (!window.__hgisSelectToggleInstalled) {
-          window.__hgisSelectToggleInstalled = true;
-          if (typeof state.selectActive !== 'boolean') state.selectActive = false;
-          document.addEventListener('click', (ev) => {
-            const btn = ev.target && ev.target.closest && ev.target.closest('.maplibregl-terradraw-add-select-button');
-            if (!btn) return;
-            // Fully take over the button: block TerraDraw from entering select mode.
-            ev.preventDefault();
-            ev.stopImmediatePropagation();
-            state.selectActive = !state.selectActive;
-            btn.classList.toggle('active', state.selectActive);
-            try { if (typeof td.setMode === 'function') td.setMode('static'); } catch (_) {}
-            try { if (typeof td.deselect === 'function') td.deselect(); } catch (_) {}
-            try { setSelectEditFlags(td, false); } catch (_) {}
-            forceYellowHalo();
-          }, true);
-        }
       } else {
         log.warn('[HydraulicGIS] td.on is not a function — events disabled.');
       }
