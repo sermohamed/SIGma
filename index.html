@@ -817,7 +817,7 @@
   </style>
 </head>
 <body>
-  <div id="build-badge">Atlas GIS · build 2026-07-01·l</div>
+  <div id="build-badge">Atlas GIS · build 2026-07-01·m</div>
   <div id="app">
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
@@ -3147,6 +3147,11 @@
         };
         const suppressNativeBlueHalo = () => {
           try {
+            // While Edit is active the feature MUST stay selected in TerraDraw so
+            // its vertices remain interactive/draggable. Deselecting here is what
+            // made vertices show but be un-draggable — so bail out during edit.
+            const _eb = document.getElementById('hgis-edit-btn');
+            if (_eb && _eb.classList.contains('active')) return;
             if (!td || typeof td.deselect !== 'function') return;
             try { td.deselect(); } catch (_) {}
             requestAnimationFrame(() => { try { td.deselect(); } catch (_) {} });
