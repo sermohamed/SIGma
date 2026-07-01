@@ -817,7 +817,7 @@
   </style>
 </head>
 <body>
-  <div id="build-badge">Atlas GIS · build 2026-07-01·k</div>
+  <div id="build-badge">Atlas GIS · build 2026-07-01·l</div>
   <div id="app">
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
@@ -3350,39 +3350,62 @@
 
         // Backup pointerup/click selection path for all device types.
         (function installSelectionFallback() {
-          const layersForPick = ['td-point', 'td-linestring', 'td-polygon', 'td-polygon-outline',
-            'app-derived-point', 'app-derived-line', 'app-derived-fill'];
-          const resolveStoreFeatureFromHit = (hit) => {
-            if (!hit) return null;
-            const propId = hit.properties && hit.properties.id;
-            if (propId) {
-              const byStoreId = state.features.find(f => f.id === propId);
-              if (byStoreId) return byStoreId;
+          // Robust GEOMETRIC hit-test against our own feature store. This does
+          // NOT rely on TerraDraw layer names or internal ids (which were not
+          // matching, so map-tap selection never resolved). We project the
+          // feature geometry to screen pixels and test proximity to the tap.
+          const POINT_PX = 18;   // tap tolerance for points
+          const LINE_PX = 12;    // tap tolerance for lines
+          const pxDistToSegment = (p, a, b) => {
+            const vx = b.x - a.x, vy = b.y - a.y;
+            const wx = p.x - a.x, wy = p.y - a.y;
+            const len2 = vx * vx + vy * vy;
+            let t = len2 > 0 ? (wx * vx + wy * vy) / len2 : 0;
+            t = Math.max(0, Math.min(1, t));
+            const cx = a.x + t * vx, cy = a.y + t * vy;
+            const dx = p.x - cx, dy = p.y - cy;
+            return Math.sqrt(dx * dx + dy * dy);
+          };
+          const minPxDistToLine = (coordsArrays, tapPx) => {
+            let best = Infinity;
+            for (const line of coordsArrays) {
+              for (let i = 0; i < line.length - 1; i++) {
+                const a = map.project(line[i]);
+                const b = map.project(line[i + 1]);
+                const d = pxDistToSegment(tapPx, a, b);
+                if (d < best) best = d;
+              }
             }
-            const terraLikeId =
-              (hit.properties && (hit.properties._terraId || hit.properties.__gm_id || hit.properties.gm_id || hit.properties.id)) ??
-              hit.id;
-            if (terraLikeId != null) {
-              return findStoreFeatureByTerraIdFallback(terraLikeId);
-            }
-            return null;
+            return best;
           };
           const resolveOurIds = (point) => {
-            const layers = layersForPick.filter(id => map.getLayer(id));
-            let hits = [];
-            if (layers.length) {
-              hits = map.queryRenderedFeatures(point, { layers });
+            const tapPx = { x: point.x, y: point.y };
+            let tapLngLat = null;
+            try { const ll = map.unproject([point.x, point.y]); tapLngLat = [ll.lng, ll.lat]; } catch (_) {}
+            const hits = [];
+            for (const f of state.features) {
+              if (!f || !f.geojson || !f.geojson.geometry) continue;
+              if (f.style && f.style.visible === false) continue;
+              const g = f.geojson.geometry;
+              try {
+                if (g.type === 'Polygon' || g.type === 'MultiPolygon') {
+                  if (tapLngLat && turf.booleanPointInPolygon(turf.point(tapLngLat), f.geojson)) {
+                    hits.push(f.id);
+                  }
+                } else if (g.type === 'LineString') {
+                  if (minPxDistToLine([g.coordinates], tapPx) <= LINE_PX) hits.push(f.id);
+                } else if (g.type === 'MultiLineString') {
+                  if (minPxDistToLine(g.coordinates, tapPx) <= LINE_PX) hits.push(f.id);
+                } else if (g.type === 'Point') {
+                  const p = map.project(g.coordinates);
+                  const dx = p.x - tapPx.x, dy = p.y - tapPx.y;
+                  if (Math.sqrt(dx * dx + dy * dy) <= POINT_PX) hits.push(f.id);
+                }
+              } catch (_) {}
             }
-            // Engine-agnostic fallback (covers Geoman layer IDs too).
-            if (!hits.length) {
-              hits = map.queryRenderedFeatures(point);
-            }
-            const ourIds = [];
-            for (const hit of (hits || [])) {
-              const ours = resolveStoreFeatureFromHit(hit);
-              if (ours && !ourIds.includes(ours.id)) ourIds.push(ours.id);
-            }
-            return ourIds;
+            // Topmost first (features drawn later render on top).
+            hits.reverse();
+            return hits;
           };
           const applyPick = (point) => {
             let mode = 'static';
