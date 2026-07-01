@@ -817,7 +817,7 @@
   </style>
 </head>
 <body>
-  <div id="build-badge">Atlas GIS · build 2026-07-01·n</div>
+  <div id="build-badge">Atlas GIS · build 2026-07-01·o</div>
   <div id="app">
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
@@ -2666,10 +2666,18 @@
                   "Cet objet dérivé (buffer/intersection/courbes) ne peut pas être édité.", () => {});
                 return;
               }
+              // Mark edit active FIRST. selectFeature() below fires the 'select'
+              // event synchronously; if the active flag isn't set yet, our
+              // selection guards run and immediately strip the draggable-vertex
+              // flags + deselect — which is why vertices showed but wouldn't drag.
+              editBtn.classList.add('active');
               setSelectEditFlags(td2, true);
               td2.setMode('select');
               try { td2.selectFeature(ours.geojson.properties._terraId); } catch (e) {}
-              editBtn.classList.add('active');
+              // Re-assert the edit flags on the next frames in case any late
+              // event tried to reset them.
+              setTimeout(() => { try { setSelectEditFlags(td2, true); } catch (_) {} }, 0);
+              setTimeout(() => { try { setSelectEditFlags(td2, true); } catch (_) {} }, 60);
               hudLog('Edit ON ' + firstId);
             } catch (err) { hudLog('Edit ERR ' + err.message); }
           };
