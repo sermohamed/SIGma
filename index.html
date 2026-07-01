@@ -754,6 +754,21 @@
       background-color: var(--brand) !important;
       color: #fff !important;
     }
+    /* Sharp inline-SVG draw buttons (override the dim inverted data-URI look). */
+    #draw-drawer .maplibregl-ctrl-group button.hgis-sharp-btn {
+      filter: none !important;
+      background-image: none !important;
+      background-color: transparent !important;
+      color: var(--ink-0) !important;
+    }
+    #draw-drawer .maplibregl-ctrl-group button.hgis-sharp-btn:hover {
+      background-color: rgba(255,255,255,0.06) !important;
+      color: #fff !important;
+    }
+    #draw-drawer .maplibregl-ctrl-group button.hgis-sharp-btn.active {
+      background-color: var(--brand) !important;
+      color: #fff !important;
+    }
     /* Edit + Delete shown as CHILDREN of the Select button. Collapsed by
        default; revealed only while selection is active. */
     #hgis-select-children {
@@ -802,7 +817,7 @@
   </style>
 </head>
 <body>
-  <div id="build-badge">Atlas GIS · build 2026-07-01·j</div>
+  <div id="build-badge">Atlas GIS · build 2026-07-01·k</div>
   <div id="app">
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
@@ -2565,7 +2580,33 @@
             ctrlGroup.querySelectorAll('.maplibregl-terradraw-add-select-button, .maplibregl-terradraw-delete-selection-button')
               .forEach(b => { b.style.display = 'none'; });
           };
-          hideNative();
+
+          // Give the native draw buttons the same sharp, inline-SVG look as our
+          // custom Select control (clean stroke icons instead of the dim,
+          // inverted data-URI glyphs).
+          const drawIcons = {
+            'add-point': `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;"><path d="M12 21s-6-5.686-6-10a6 6 0 1112 0c0 4.314-6 10-6 10z"/><circle cx="12" cy="11" r="2" fill="currentColor" stroke="none"/></svg>`,
+            'add-line': `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;"><path d="M4 19l6-9 4 5 6-11"/><circle cx="4" cy="19" r="1.6" fill="currentColor" stroke="none"/><circle cx="20" cy="4" r="1.6" fill="currentColor" stroke="none"/></svg>`,
+            'add-polygon': `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;"><path d="M12 3l8 6-3 10H7L4 9z"/></svg>`,
+            'add-rectangle': `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;"><rect x="4" y="6" width="16" height="12" rx="1"/></svg>`,
+            'add-circle': `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;"><circle cx="12" cy="12" r="8"/></svg>`,
+          };
+          const beautifyDraw = () => {
+            ctrlGroup.querySelectorAll('button').forEach(btn => {
+              const cls = btn.className || '';
+              if (cls.indexOf('hgis-') !== -1) return; // skip our custom buttons
+              for (const key of Object.keys(drawIcons)) {
+                if (cls.indexOf(key) !== -1) {
+                  btn.classList.add('hgis-sharp-btn');
+                  btn.innerHTML = drawIcons[key];
+                  break;
+                }
+              }
+            });
+          };
+
+          const refreshToolbar = () => { hideNative(); beautifyDraw(); };
+          refreshToolbar();
 
           const selectSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
               <path d="M3 3l7.5 18 2.5-7.5L20.5 11 3 3z"/>
@@ -2655,12 +2696,25 @@
                 toDelete.forEach(removeFeature);
                 state.selectedIds = [];
                 notifyUi();
-                forceYellowHalo();
+                refreshHalo();
               });
           };
 
           children.appendChild(editBtn);
           children.appendChild(delBtn);
+
+          // NOTE: forceYellowHalo() lives inside a later block scope and is NOT
+          // reachable here. Use the module-level syncSelectionHighlight + map so
+          // these handlers never throw (that ReferenceError was why the Select
+          // button appeared unresponsive).
+          const refreshHalo = () => {
+            try { if (typeof syncSelectionHighlight === 'function') syncSelectionHighlight(); } catch (_) {}
+            try {
+              ['app-selection-fill', 'app-selection-line', 'app-selection-point', 'app-label']
+                .forEach(l => { if (map.getLayer(l)) map.moveLayer(l); });
+            } catch (_) {}
+            try { map.triggerRepaint(); } catch (_) {}
+          };
 
           const setSelectActive = (on) => {
             state.selectActive = !!on;
@@ -2671,7 +2725,7 @@
               editBtn.classList.remove('active');
             }
             try { if (typeof td.setMode === 'function' && td.getMode && td.getMode() !== 'select') td.setMode('static'); } catch (_) {}
-            forceYellowHalo();
+            refreshHalo();
           };
           window.__hgisSetSelectActive = setSelectActive;
 
@@ -2683,8 +2737,8 @@
           ctrlGroup.appendChild(selectBtn);
           ctrlGroup.appendChild(children);
           installed = true;
-          // Re-hide native buttons in case the library re-rendered them.
-          [0, 120, 350, 900].forEach(d => setTimeout(hideNative, d));
+          // Re-apply in case the library re-rendered its buttons.
+          [0, 120, 350, 900].forEach(d => setTimeout(refreshToolbar, d));
           hudLog('selection controls installed');
           return true;
         };
