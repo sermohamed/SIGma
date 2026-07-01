@@ -532,6 +532,42 @@
     .layer-action:hover { background: var(--bg-3); color: var(--ink-0); }
     .layer-action.danger:hover { background: rgba(239,90,90,0.1); color: var(--danger); }
 
+    /* ─── Layer groups (Calques) ─── */
+    .group-header {
+      display: flex; align-items: center; gap: 6px;
+      padding: 8px 10px; margin-top: 6px;
+      background: var(--bg-3);
+      border: 1px solid var(--line-strong); border-radius: 6px;
+    }
+    .group-caret {
+      width: 22px; height: 26px; padding: 0; flex-shrink: 0;
+      background: transparent; border: none; color: var(--ink-1);
+      cursor: pointer; display: flex; align-items: center; justify-content: center;
+    }
+    .group-name {
+      flex: 1; min-width: 0;
+      background: transparent; border: none;
+      color: var(--ink-0); font-size: 13px; font-weight: 600;
+      cursor: pointer; text-align: left; padding: 2px 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .group-name:hover { color: var(--brand); }
+    .group-body {
+      margin: 6px 0 6px 12px;
+      padding-left: 8px;
+      border-left: 2px solid var(--line-strong);
+    }
+    .group-header-lite {
+      font-size: 11px; color: var(--ink-2); text-transform: uppercase;
+      letter-spacing: 0.04em; margin: 12px 0 6px;
+    }
+    .layer-group-select {
+      margin-top: 6px; width: 100%;
+      background: var(--bg-1); color: var(--ink-1);
+      border: 1px solid var(--line); border-radius: 4px;
+      font-size: 11px; padding: 3px 6px;
+    }
+
     .empty-state {
       text-align: center;
       padding: 32px 16px;
@@ -817,7 +853,7 @@
   </style>
 </head>
 <body>
-  <div id="build-badge">Atlas GIS · build 2026-07-01·p (multi-select)</div>
+  <div id="build-badge">Atlas GIS · build 2026-07-01·q (groups + bornage)</div>
   <div id="app">
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
@@ -1187,6 +1223,7 @@
   /* ═══ 3. STATE STORE ════════════════════════════════════════════════════════ */
   const state = {
     features: [],         // tableau d'objets MapFeature
+    groups: [],           // couches: { id, name, collapsed } — chaque objet peut avoir un groupId
     selectedIds: [],
     multiSelectMode: false,  // when true, taps add to selection instead of replacing it
     activePanel: null,
@@ -1206,11 +1243,20 @@
 
   // Persistance localStorage
   const STORAGE_KEY = 'hydraulic-gis:features:v1';
+  const GROUPS_KEY = 'hydraulic-gis:groups:v1';
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
       if (raw) state.features = normalizeLoadedFeatures(JSON.parse(raw));
     } catch (e) { log.warn('Échec de chargement :', e); }
+    // Restore layer groups.
+    try {
+      const g = localStorage.getItem(GROUPS_KEY);
+      if (g) {
+        const parsed = JSON.parse(g);
+        if (Array.isArray(parsed)) state.groups = parsed.filter(x => x && x.id);
+      }
+    } catch (e) {}
     // Restore basemap preference
     try {
       const bm = localStorage.getItem('hydraulic-gis:basemap');
@@ -1221,6 +1267,9 @@
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(state.features));
     } catch (e) { log.warn('Échec de sauvegarde :', e); }
+    try {
+      localStorage.setItem(GROUPS_KEY, JSON.stringify(state.groups));
+    } catch (e) {}
   }
 
   function notifyFeatures() {
@@ -1504,6 +1553,61 @@
       notifyFeatures();
     }
   }
+
+  /* ─── Layer groups ──────────────────────────────────────────────────────
+     A group is an organizational layer in Calques. Each feature may carry a
+     groupId; features without one appear under "Sans groupe". Group actions
+     cascade to member features (visibility) but never change geometry. */
+  function createGroupObj(name) {
+    const g = { id: newId('g'), name: name || ('Couche ' + (state.groups.length + 1)), collapsed: false };
+    state.groups.push(g);
+    return g;
+  }
+  function createGroup(name) {
+    const g = createGroupObj(name);
+    notifyFeatures(); notifyUi();
+    return g;
+  }
+  function renameGroup(id, name) {
+    const g = state.groups.find(x => x.id === id);
+    if (g && name && name.trim()) { g.name = name.trim(); notifyFeatures(); notifyUi(); }
+    else ui.render();
+  }
+  function deleteGroup(id) {
+    state.groups = state.groups.filter(g => g.id !== id);
+    // Members become ungrouped (features are kept).
+    state.features.forEach(f => { if (f.groupId === id) f.groupId = null; });
+    notifyFeatures(); notifyUi();
+  }
+  function toggleGroupCollapsed(id) {
+    const g = state.groups.find(x => x.id === id);
+    if (g) { g.collapsed = !g.collapsed; notifyFeatures(); notifyUi(); }
+  }
+  function setGroupVisibility(id, visible) {
+    let touched = false;
+    state.features.forEach(f => {
+      if (f.groupId === id) { f.style.visible = visible; f.updatedAt = Date.now(); touched = true; }
+    });
+    if (touched) { notifyFeatures(); notifyUi(); }
+  }
+  function assignFeatureToGroup(featureId, groupId) {
+    const f = state.features.find(x => x.id === featureId);
+    if (!f) return;
+    f.groupId = groupId || null;
+    f.updatedAt = Date.now();
+    notifyFeatures(); notifyUi();
+  }
+  function groupSelectedIntoNewGroup() {
+    if (!state.selectedIds.length) return;
+    const g = createGroupObj();
+    state.selectedIds.forEach(id => {
+      const f = state.features.find(x => x.id === id);
+      if (f) f.groupId = g.id;
+    });
+    notifyFeatures(); notifyUi();
+  }
+  window.layerCreateGroup = function () { createGroup(); };
+  window.layerGroupSelected = function () { groupSelectedIntoNewGroup(); };
 
   // Show the rename modal for a freshly-created feature. Default value is
   // the auto-generated name. If the user types something different, we
@@ -3861,58 +3965,131 @@
   }
 
   /* ═══ 8. PANEL CONTENT — LAYERS ═════════════════════════════════════════════ */
+  function featureRowHtml(f) {
+    const sel = state.selectedIds.includes(f.id);
+    const metrics = f.metrics.areaSquareMeters !== undefined ? formatArea(f.metrics.areaSquareMeters)
+                  : f.metrics.lengthMeters !== undefined ? formatDistance(f.metrics.lengthMeters)
+                  : '';
+    const derivedKind = f.geojson && f.geojson.properties && f.geojson.properties._derivedKind;
+    const derivedLbl = derivedKind === 'buffer' ? 'buffer'
+                     : derivedKind === 'intersection' ? 'intersection'
+                     : derivedKind === 'contours' ? 'courbes'
+                     : derivedKind === 'bornage' ? 'bornage'
+                     : null;
+    const derivedBadge = derivedLbl
+      ? `<span style="display:inline-block; margin-left:6px; padding:1px 6px; background:rgba(251,196,18,0.15); color:#fbc412; font-size:10px; border-radius:8px; vertical-align:middle;">${derivedLbl}</span>`
+      : '';
+    const eyeIcon = f.style.visible
+      ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>`
+      : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7c2.4 0 4.4 1 6 2.2M22 12s-3.5 7-10 7c-2.4 0-4.4-1-6-2.2M3 3l18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+    // Group assignment dropdown (only meaningful when groups exist).
+    const groupOptions = `<option value="">Sans couche</option>` +
+      state.groups.map(g => `<option value="${g.id}" ${f.groupId === g.id ? 'selected' : ''}>${escapeHtml(g.name)}</option>`).join('');
+    const groupSelect = state.groups.length
+      ? `<select class="layer-group-select" data-id="${f.id}" title="Assigner à une couche">${groupOptions}</select>`
+      : '';
+    return `
+      <div class="layer-row${sel ? ' selected' : ''}${f.style.visible ? '' : ' hidden'}" data-id="${f.id}">
+        <span class="swatch" style="background:${f.style.fill}"></span>
+        <div style="flex:1; min-width:0;">
+          <button class="layer-name" data-action="select" data-id="${f.id}" ondblclick="layerStartRename('${f.id}')" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}${derivedBadge}</button>
+          ${metrics ? `<div class="layer-metrics">${metrics}</div>` : ''}
+          ${groupSelect}
+        </div>
+        <button class="layer-action" data-action="zoom" data-id="${f.id}" title="Centrer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6" stroke="currentColor" stroke-width="2"/><path d="M16 16l5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+        <button class="layer-action" data-action="visibility" data-id="${f.id}" title="${f.style.visible ? 'Masquer' : 'Afficher'}">${eyeIcon}</button>
+        <button class="layer-action danger" data-action="delete" data-id="${f.id}" title="Supprimer">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>`;
+  }
+
+  function groupHeaderHtml(g, feats) {
+    const anyVisible = feats.some(f => f.style.visible);
+    const caret = g.collapsed
+      ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`
+      : `<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    const eyeIcon = anyVisible
+      ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>`
+      : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7c2.4 0 4.4 1 6 2.2M22 12s-3.5 7-10 7c-2.4 0-4.4-1-6-2.2M3 3l18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
+    return `
+      <div class="group-header" data-gid="${g.id}">
+        <button class="group-caret" data-action="group-collapse" data-gid="${g.id}" title="Plier/déplier">${caret}</button>
+        <button class="group-name" data-action="group-collapse" data-gid="${g.id}" ondblclick="groupStartRename('${g.id}')" title="${escapeHtml(g.name)}">${escapeHtml(g.name)} <span style="color:var(--ink-2); font-weight:400;">(${feats.length})</span></button>
+        <button class="layer-action" data-action="group-visibility" data-gid="${g.id}" title="${anyVisible ? 'Masquer la couche' : 'Afficher la couche'}">${eyeIcon}</button>
+        <button class="layer-action danger" data-action="group-delete" data-gid="${g.id}" title="Supprimer la couche (garde les objets)">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        </button>
+      </div>`;
+  }
+
   function renderLayers() {
-    if (state.features.length === 0) {
+    if (state.features.length === 0 && state.groups.length === 0) {
       return `<div class="empty-state">Aucun objet sur la carte.<div class="small">Utilisez la barre de dessin en haut à gauche de la carte pour créer.</div></div>`;
     }
-    const rows = state.features.map(f => {
-      const sel = state.selectedIds.includes(f.id);
-      const metrics = f.metrics.areaSquareMeters !== undefined ? formatArea(f.metrics.areaSquareMeters)
-                    : f.metrics.lengthMeters !== undefined ? formatDistance(f.metrics.lengthMeters)
-                    : '';
-      // Tag derived features (buffer / intersection / contours) so the
-      // user can easily spot them in the list. The label appears next to
-      // the metric line in a muted color.
-      const derivedKind = f.geojson && f.geojson.properties && f.geojson.properties._derivedKind;
-      const derivedLbl = derivedKind === 'buffer' ? 'buffer'
-                       : derivedKind === 'intersection' ? 'intersection'
-                       : derivedKind === 'contours' ? 'courbes'
-                       : null;
-      const derivedBadge = derivedLbl
-        ? `<span style="display:inline-block; margin-left:6px; padding:1px 6px; background:rgba(251,196,18,0.15); color:#fbc412; font-size:10px; border-radius:8px; vertical-align:middle;">${derivedLbl}</span>`
-        : '';
-      const eyeIcon = f.style.visible
-        ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>`
-        : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7c2.4 0 4.4 1 6 2.2M22 12s-3.5 7-10 7c-2.4 0-4.4-1-6-2.2M3 3l18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
-      return `
-        <div class="layer-row${sel ? ' selected' : ''}${f.style.visible ? '' : ' hidden'}" data-id="${f.id}">
-          <span class="swatch" style="background:${f.style.fill}"></span>
-          <div style="flex:1; min-width:0;">
-            <button class="layer-name" data-action="select" data-id="${f.id}" ondblclick="layerStartRename('${f.id}')" title="${escapeHtml(f.name)}">${escapeHtml(f.name)}${derivedBadge}</button>
-            ${metrics ? `<div class="layer-metrics">${metrics}</div>` : ''}
-          </div>
-          <button class="layer-action" data-action="zoom" data-id="${f.id}" title="Centrer">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><circle cx="11" cy="11" r="6" stroke="currentColor" stroke-width="2"/><path d="M16 16l5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          </button>
-          <button class="layer-action" data-action="visibility" data-id="${f.id}" title="${f.style.visible ? 'Masquer' : 'Afficher'}">${eyeIcon}</button>
-          <button class="layer-action danger" data-action="delete" data-id="${f.id}" title="Supprimer">
-            <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          </button>
-        </div>`;
-    }).join('');
-    return `
-      <div class="row" style="justify-content:space-between; margin-bottom:12px;">
-        <span style="font-size:11px; color:var(--ink-2);">${state.features.length} objet${state.features.length > 1 ? 's' : ''}</span>
+    // Partition features into groups + ungrouped.
+    const grouped = new Map();
+    const ungrouped = [];
+    for (const f of state.features) {
+      if (f.groupId && state.groups.some(g => g.id === f.groupId)) {
+        if (!grouped.has(f.groupId)) grouped.set(f.groupId, []);
+        grouped.get(f.groupId).push(f);
+      } else {
+        ungrouped.push(f);
+      }
+    }
+
+    const selCount = state.selectedIds.length;
+    const header = `
+      <div class="row" style="justify-content:space-between; margin-bottom:10px; gap:8px;">
+        <span style="font-size:11px; color:var(--ink-2);">${state.features.length} objet${state.features.length > 1 ? 's' : ''} · ${state.groups.length} couche${state.groups.length > 1 ? 's' : ''}</span>
         <button class="btn btn-danger" onclick="layersClearAll()">Tout effacer</button>
       </div>
-      <div class="stack-tight">${rows}</div>`;
+      <div class="row" style="gap:8px; margin-bottom:12px;">
+        <button class="btn btn-ghost" onclick="layerCreateGroup()" style="flex:1;">+ Nouvelle couche</button>
+        <button class="btn btn-ghost" onclick="layerGroupSelected()" style="flex:1;" ${selCount ? '' : 'disabled'}>Grouper sélection${selCount ? ' (' + selCount + ')' : ''}</button>
+      </div>`;
+
+    let body = '';
+    for (const g of state.groups) {
+      const feats = grouped.get(g.id) || [];
+      body += groupHeaderHtml(g, feats);
+      if (!g.collapsed) {
+        body += `<div class="stack-tight group-body">${feats.map(featureRowHtml).join('') || '<div class="empty-state" style="padding:8px;">Couche vide — assignez des objets ci-dessous.</div>'}</div>`;
+      }
+    }
+    if (ungrouped.length) {
+      if (state.groups.length) {
+        body += `<div class="group-header-lite">Sans couche</div>`;
+      }
+      body += `<div class="stack-tight">${ungrouped.map(featureRowHtml).join('')}</div>`;
+    }
+    return header + body;
   }
 
   function attachLayersEvents(root) {
     root.querySelectorAll('[data-action]').forEach(btn => {
       btn.addEventListener('click', (e) => {
-        const id = btn.dataset.id;
         const action = btn.dataset.action;
+        const gid = btn.dataset.gid;
+        // Group-level actions
+        if (gid) {
+          if (action === 'group-collapse') toggleGroupCollapsed(gid);
+          else if (action === 'group-visibility') {
+            const feats = state.features.filter(f => f.groupId === gid);
+            const anyVisible = feats.some(f => f.style.visible);
+            setGroupVisibility(gid, !anyVisible);
+          } else if (action === 'group-delete') {
+            const g = state.groups.find(x => x.id === gid);
+            if (!g) return;
+            ui.confirm('Supprimer la couche ?', `« ${g.name} » sera supprimée. Les objets qu'elle contient sont conservés (déplacés vers « Sans couche »).`, () => deleteGroup(gid));
+          }
+          return;
+        }
+        // Feature-level actions
+        const id = btn.dataset.id;
         if (action === 'select') selectFeature(id, { additive: state.multiSelectMode });
         else if (action === 'zoom') zoomToFeature(id);
         else if (action === 'visibility') toggleVisibility(id);
@@ -3923,7 +4100,37 @@
         }
       });
     });
+    // Group assignment dropdowns
+    root.querySelectorAll('.layer-group-select').forEach(sel => {
+      sel.addEventListener('change', () => {
+        assignFeatureToGroup(sel.dataset.id, sel.value);
+      });
+    });
   }
+
+  window.groupStartRename = function (id) {
+    const g = state.groups.find(x => x.id === id);
+    const header = document.querySelector(`.group-header[data-gid="${id}"]`);
+    if (!g || !header) return;
+    const btn = header.querySelector('.group-name');
+    if (!btn) return;
+    const input = document.createElement('input');
+    input.value = g.name;
+    input.className = 'layer-name editing';
+    input.style.font = 'inherit';
+    btn.replaceWith(input);
+    input.focus(); input.select();
+    function commit() {
+      const v = input.value.trim();
+      if (v && v !== g.name) renameGroup(id, v);
+      else ui.render();
+    }
+    input.addEventListener('blur', commit);
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') commit();
+      if (e.key === 'Escape') ui.render();
+    });
+  };
 
   window.layerStartRename = function (id) {
     const row = document.querySelector(`.layer-row[data-id="${id}"]`);
@@ -4098,6 +4305,36 @@
     const polys = sel.filter(f => ['polygon', 'rectangle', 'circle'].includes(f.kind));
     return `
       <div class="stack">
+        <!-- ─── Bornage tool (polygon by coordinates) ────────────────── -->
+        <div class="surface">
+          <div class="field-label" style="margin-bottom:6px;">Bornage (polygone par coordonnées)</div>
+          <p style="font-size:12px; color:var(--ink-1); margin:0 0 10px;">
+            Saisissez autant de points que voulu, puis « Terminer » relie tous les points en polygone.
+            Un point situé à plus de 100&nbsp;km du précédent est refusé (erreur de saisie probable).
+          </p>
+          <label class="field-label" style="font-size:11px;">Système de coordonnées</label>
+          <select id="bn-crs" class="field" style="margin-bottom:8px;">
+            <option value="wgs84">GPS décimal (WGS84)</option>
+            <option value="lambert-maroc-1">Maroc Lambert Zone 1</option>
+          </select>
+          <div style="display:flex; gap:8px; align-items:flex-end;">
+            <div style="flex:1;">
+              <label class="field-label" style="font-size:11px;" id="bn-x-label">Longitude</label>
+              <input type="text" id="bn-x" class="field" inputmode="decimal" autocapitalize="off" autocorrect="off"
+                     style="font-family:'JetBrains Mono',ui-monospace,monospace;" />
+            </div>
+            <div style="flex:1;">
+              <label class="field-label" style="font-size:11px;" id="bn-y-label">Latitude</label>
+              <input type="text" id="bn-y" class="field" inputmode="decimal" autocapitalize="off" autocorrect="off"
+                     style="font-family:'JetBrains Mono',ui-monospace,monospace;" />
+            </div>
+            <button class="btn btn-solid" id="bn-add" style="white-space:nowrap;">+ Point</button>
+          </div>
+          <div id="bn-msg" style="font-size:12px; margin-top:8px;"></div>
+          <div id="bn-list" style="margin-top:8px;"></div>
+          <button class="btn btn-solid" id="bn-finish" style="width:100%; margin-top:10px;">Terminer le polygone</button>
+        </div>
+
         <!-- ─── Buffer tool ──────────────────────────────────────────── -->
         <div class="surface">
           <div class="field-label" style="margin-bottom:6px;">Buffer (zone tampon)</div>
@@ -4155,6 +4392,127 @@
   }
 
   function attachToolsEvents(root) {
+    // ─── Bornage (polygon by coordinates) ───
+    (function bornage() {
+      if (!state._bornage) state._bornage = { crs: 'wgs84', points: [] };
+      const crsSel = root.querySelector('#bn-crs');
+      const xIn = root.querySelector('#bn-x');
+      const yIn = root.querySelector('#bn-y');
+      const addBtn = root.querySelector('#bn-add');
+      const finishBtn = root.querySelector('#bn-finish');
+      const msgEl = root.querySelector('#bn-msg');
+      const listEl = root.querySelector('#bn-list');
+      if (!crsSel || !addBtn || !finishBtn) return;
+
+      const showMsg = (text, kind) => {
+        if (!msgEl) return;
+        msgEl.textContent = text || '';
+        msgEl.style.color = kind === 'err' ? 'var(--danger)' : kind === 'ok' ? 'var(--success)' : 'var(--ink-1)';
+      };
+      const updateLabels = () => {
+        const geo = state._bornage.crs === 'wgs84';
+        const xl = root.querySelector('#bn-x-label');
+        const yl = root.querySelector('#bn-y-label');
+        if (xl) xl.textContent = geo ? 'Longitude' : 'X (Est)';
+        if (yl) yl.textContent = geo ? 'Latitude' : 'Y (Nord)';
+      };
+      const renderList = () => {
+        if (!listEl) return;
+        const pts = state._bornage.points;
+        if (!pts.length) {
+          listEl.innerHTML = '<div style="font-size:11px;color:var(--ink-2);">Aucun point saisi.</div>';
+          return;
+        }
+        listEl.innerHTML = pts.map((p, i) => `
+          <div style="display:flex; align-items:center; gap:8px; font-size:11px; font-family:'JetBrains Mono',ui-monospace,monospace; padding:3px 0; border-bottom:1px solid var(--line);">
+            <span style="color:var(--ink-2); width:22px;">${i + 1}</span>
+            <span style="flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">${escapeHtml(p.label)}</span>
+            <button class="layer-action danger" data-bn-remove="${i}" title="Retirer" style="width:26px;height:26px;">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+            </button>
+          </div>`).join('');
+        listEl.querySelectorAll('[data-bn-remove]').forEach(b => {
+          b.addEventListener('click', () => {
+            const idx = parseInt(b.getAttribute('data-bn-remove'), 10);
+            if (!isNaN(idx)) { state._bornage.points.splice(idx, 1); renderList(); showMsg('', ''); }
+          });
+        });
+      };
+
+      // Restore persisted UI state.
+      crsSel.value = state._bornage.crs;
+      updateLabels();
+      renderList();
+
+      crsSel.addEventListener('change', () => {
+        state._bornage.crs = crsSel.value;
+        updateLabels();
+      });
+
+      const addPoint = () => {
+        const crs = state._bornage.crs;
+        const x = parseCoord(xIn ? xIn.value : '');
+        const y = parseCoord(yIn ? yIn.value : '');
+        if (x === null || y === null) { showMsg('Coordonnées invalides. Vérifiez la saisie.', 'err'); return; }
+        let lng, lat;
+        try {
+          if (crs === 'wgs84') { lng = x; lat = y; }
+          else { const r = reproject([x, y], crs, 'wgs84'); lng = r[0]; lat = r[1]; }
+        } catch (e) { showMsg('Conversion de coordonnées impossible.', 'err'); return; }
+        if (!isFinite(lng) || !isFinite(lat) || Math.abs(lat) > 90 || Math.abs(lng) > 180) {
+          showMsg('Coordonnées hors limites (vérifiez le système choisi).', 'err'); return;
+        }
+        const pts = state._bornage.points;
+        if (pts.length) {
+          const prev = pts[pts.length - 1];
+          let dkm = Infinity;
+          try { dkm = turf.distance([prev.lng, prev.lat], [lng, lat], { units: 'kilometers' }); } catch (_) {}
+          if (dkm > 100) {
+            showMsg(`Point refusé : ${dkm.toFixed(1)} km du point précédent (>100 km ⇒ erreur de saisie).`, 'err');
+            return;
+          }
+        }
+        const label = crs === 'wgs84'
+          ? `${lng.toFixed(6)}, ${lat.toFixed(6)}`
+          : `${formatProjected(x, 1)} ; ${formatProjected(y, 1)}`;
+        pts.push({ lng, lat, x, y, crs, label });
+        if (xIn) xIn.value = '';
+        if (yIn) yIn.value = '';
+        if (xIn) xIn.focus();
+        showMsg(`Point ${pts.length} ajouté.`, 'ok');
+        renderList();
+      };
+
+      const finish = () => {
+        const pts = state._bornage.points;
+        if (pts.length < 3) { showMsg('Au moins 3 points sont requis pour former un polygone.', 'err'); return; }
+        const ring = pts.map(p => [p.lng, p.lat]);
+        ring.push([pts[0].lng, pts[0].lat]); // close the ring
+        try {
+          const newF = addFeature(
+            { type: 'Feature', geometry: { type: 'Polygon', coordinates: [ring] }, properties: { _derived: true, _derivedKind: 'bornage' } },
+            'polygon',
+            { name: `Bornage (${pts.length} pts)` }
+          );
+          ensureDerivedLayers();
+          syncDerivedLayer();
+          notifyFeatures();
+          state._bornage.points = [];
+          renderList();
+          showMsg('✓ Polygone de bornage créé.', 'ok');
+          try { zoomToFeature(newF.id); } catch (_) {}
+          promptFeatureName(newF.id);
+        } catch (e) {
+          showMsg('Erreur lors de la création : ' + (e.message || e), 'err');
+        }
+      };
+
+      addBtn.addEventListener('click', (e) => { e.preventDefault(); addPoint(); });
+      finishBtn.addEventListener('click', (e) => { e.preventDefault(); finish(); });
+      // Enter in the Y field adds the point quickly.
+      if (yIn) yIn.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); addPoint(); } });
+    })();
+
     // Buffer
     const bfBtn = root.querySelector('#bf-apply');
     const bfIn = root.querySelector('#bf-radius');
