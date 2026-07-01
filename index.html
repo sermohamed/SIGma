@@ -802,7 +802,7 @@
   </style>
 </head>
 <body>
-  <div id="build-badge">Atlas GIS · build 2026-06-30·i</div>
+  <div id="build-badge">Atlas GIS · build 2026-07-01·j</div>
   <div id="app">
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
@@ -2498,10 +2498,15 @@
                                     cls.includes('add-polygon') || cls.includes('add-rectangle') ||
                                     cls.includes('add-circle');
               if (isDrawModeBtn) {
-                // Leaving selection: turn the app select toggle off so taps draw.
+                // Leaving selection: turn the app select toggle off WITHOUT
+                // touching TerraDraw's mode — the draw button just set the mode
+                // (e.g. 'point'), so calling setMode('static') here would cancel
+                // the draw tool and nothing would draw. Only update app flags/UI.
                 try {
-                  if (typeof window.__hgisSetSelectActive === 'function') window.__hgisSetSelectActive(false);
-                  else state.selectActive = false;
+                  state.selectActive = false;
+                  const sb = document.getElementById('hgis-select-btn'); if (sb) sb.classList.remove('active');
+                  const ch = document.getElementById('hgis-select-children'); if (ch) ch.classList.remove('open');
+                  const eb = document.getElementById('hgis-edit-btn'); if (eb) eb.classList.remove('active');
                 } catch (_) {}
                 setTimeout(() => {
                   drawer.classList.add('collapsed');
