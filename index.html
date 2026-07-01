@@ -817,7 +817,7 @@
   </style>
 </head>
 <body>
-  <div id="build-badge">Atlas GIS · build 2026-07-01·o</div>
+  <div id="build-badge">Atlas GIS · build 2026-07-01·p (multi-select)</div>
   <div id="app">
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
@@ -2708,7 +2708,29 @@
               });
           };
 
+          // Multi-select toggle child — when active, taps ADD to the selection
+          // instead of replacing it (bulk style / delete then apply to all).
+          const multiSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;margin:auto;">
+              <rect x="3" y="3" width="12" height="12" rx="1"/>
+              <path d="M9 21h11a1 1 0 001-1V9"/>
+            </svg>`;
+          const multiBtn = document.createElement('button');
+          multiBtn.id = 'hgis-multi-btn';
+          multiBtn.type = 'button';
+          multiBtn.title = 'Sélection multiple';
+          multiBtn.setAttribute('aria-label', 'Activer la sélection multiple');
+          multiBtn.className = 'maplibregl-terradraw-add-control hgis-custom-btn hgis-child-btn';
+          multiBtn.style.cssText = 'background-image:none; background-color:transparent;';
+          multiBtn.innerHTML = multiSvg;
+          multiBtn.onclick = (ev) => {
+            if (ev) { ev.preventDefault(); ev.stopPropagation(); }
+            state.multiSelectMode = !state.multiSelectMode;
+            multiBtn.classList.toggle('active', state.multiSelectMode);
+            hudLog('multi ' + (state.multiSelectMode ? 'ON' : 'OFF'));
+          };
+
           children.appendChild(editBtn);
+          children.appendChild(multiBtn);
           children.appendChild(delBtn);
 
           // NOTE: forceYellowHalo() lives inside a later block scope and is NOT
@@ -2731,6 +2753,9 @@
             if (!state.selectActive) {
               try { setSelectEditFlags(td, false); } catch (_) {}
               editBtn.classList.remove('active');
+              // Leaving selection also exits multi-select mode.
+              state.multiSelectMode = false;
+              multiBtn.classList.remove('active');
             }
             try { if (typeof td.setMode === 'function' && td.getMode && td.getMode() !== 'select') td.setMode('static'); } catch (_) {}
             refreshHalo();
