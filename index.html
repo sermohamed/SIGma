@@ -853,7 +853,7 @@
   </style>
 </head>
 <body>
-  <div id="build-badge">Atlas GIS · build 2026-07-01·r (bornage import + fixes)</div>
+  <div id="build-badge">Atlas GIS · build 2026-07-01·s (label fix)</div>
   <div id="app">
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
@@ -1618,9 +1618,10 @@
 
   function removeFeature(id) {
     const f = state.features.find(x => x.id === id);
+    if (!f) return;
     // If this feature was drawn in terra-draw, remove it from there too
     // (terra-draw is the renderer; if it stays, the shape stays on the map).
-    if (f && f.geojson.properties && f.geojson.properties._terraId && drawControl) {
+    if (f.geojson.properties && f.geojson.properties._terraId && drawControl) {
       try {
         const td = drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
         if (td && typeof td.removeFeatures === 'function') {
@@ -1630,6 +1631,8 @@
     }
     state.features = state.features.filter(f2 => f2.id !== id);
     state.selectedIds = state.selectedIds.filter(x => x !== id);
+    // Immediately flush labels so deleted objects cannot leave ghost names.
+    try { applyLabelFeatures(buildLabelFeatures()); } catch (_) {}
     // Prune elevation labels and derived overlays tied to deleted features.
     try { syncContourLabelsFromStore(); } catch (_) {}
     try {
@@ -2036,7 +2039,7 @@
     if (map.getSource('app-selection')) { try { map.removeSource('app-selection'); } catch (_) {} }
 
     const empty = { type: 'FeatureCollection', features: [] };
-    map.addSource(SRC_LABELS, { type: 'geojson', data: empty });
+    map.addSource(SRC_LABELS, { type: 'geojson', data: empty, promoteId: 'id' });
     // Selection highlight source: holds the geometries of every feature in
     // state.selectedIds. Used so the user can see ALL selected items
     // simultaneously when in multi-select mode (terra-draw's own select
@@ -2088,12 +2091,11 @@
         // Minimal offset: label sits very close to the geometry centroid.
         'text-offset': [0, 0.6],
         'text-anchor': 'top',
-        // Collide within our label layer (readable), but ignore basemap
-        // labels so object names still appear over satellite imagery.
-        'text-allow-overlap': false,
+        // Separated anchor positions are computed in code; always show our labels.
+        'text-allow-overlap': true,
         'text-ignore-placement': true,
-        'text-optional': true,
-        'text-padding': 4,
+        'text-optional': false,
+        'text-padding': 2,
         // Higher priority value = drawn later = on top when placement allows.
         'symbol-sort-key': ['coalesce', ['get', 'priority'], 0],
       },
@@ -2107,12 +2109,206 @@
   }
 
   function polyCentroid(f) {
-    if (f.geojson.geometry.type !== 'Polygon') return null;
-    const ring = f.geojson.geometry.coordinates[0];
-    if (!ring || !ring.length) return null;
-    let x = 0, y = 0;
-    for (const [lng, lat] of ring) { x += lng; y += lat; }
-    return [x / ring.length, y / ring.length];
+    const geom = f.geojson && f.geojson.geometry;
+    if (!geom) return null;
+    if (geom.type === 'Polygon') {
+      const ring = geom.coordinates[0];
+      if (!ring || !ring.length) return null;
+      let x = 0, y = 0;
+      for (const [lng, lat] of ring) { x += lng; y += lat; }
+      return [x / ring.length, y / ring.length];
+    }
+    if (geom.type === 'MultiPolygon' && geom.coordinates[0]?.[0]) {
+      return polyCentroid({ geojson: { geometry: { type: 'Polygon', coordinates: geom.coordinates[0] } } });
+    }
+    return null;
+  }
+
+  function computeLabelPriority(f) {
+    let priority = 0;
+    if (f.metrics && f.metrics.lengthMeters) {
+      priority = Math.round(Math.log10(Math.max(1, f.metrics.lengthMeters)) * 20);
+    } else if (f.metrics && f.metrics.areaSquareMeters) {
+      priority = Math.round(Math.log10(Math.max(1, f.metrics.areaSquareMeters)) * 15);
+    }
+    if (f.geojson && f.geojson.properties && f.geojson.properties._derivedKind === 'buffer') priority -= 5;
+    return priority;
+  }
+
+  function ringExteriorPointAwayFrom(geojson, awayFromLngLat) {
+    const geom = geojson.geometry;
+    if (!geom || geom.type !== 'Polygon') return null;
+    const ring = geom.coordinates[0];
+    if (!ring || ring.length < 2) return null;
+    let best = null, bestScore = -Infinity;
+    const step = Math.max(1, Math.floor(ring.length / 48));
+    for (let i = 0; i < ring.length; i += step) {
+      const c = ring[i];
+      try {
+        const d = turf.distance(turf.point(awayFromLngLat), turf.point(c), { units: 'meters' });
+        if (d > bestScore) { bestScore = d; best = c; }
+      } catch (_) {}
+    }
+    return best;
+  }
+
+  function findEnclosedFeature(outerF, allFeatures) {
+    let outerCenter;
+    try { outerCenter = turf.centroid(outerF.geojson).geometry.coordinates; } catch (_) { return null; }
+    try {
+      if (!turf.booleanPointInPolygon(turf.point(outerCenter), outerF.geojson)) return null;
+    } catch (_) { return null; }
+    let best = null, bestArea = Infinity;
+    for (const inner of allFeatures) {
+      if (inner.id === outerF.id) continue;
+      if (!inner.geojson || !inner.geojson.geometry) continue;
+      if (inner.style && inner.style.visible === false) continue;
+      try {
+        const ic = turf.centroid(inner.geojson).geometry.coordinates;
+        if (!turf.booleanPointInPolygon(turf.point(ic), outerF.geojson)) continue;
+        const area = turf.area(inner.geojson);
+        if (area < bestArea) { bestArea = area; best = inner; }
+      } catch (_) {}
+    }
+    return best;
+  }
+
+  function computeLabelAnchor(f, allFeatures) {
+    const g = f.geojson && f.geojson.geometry;
+    if (!g) return null;
+    const dk = f.geojson.properties && f.geojson.properties._derivedKind;
+
+    if (g.type === 'Point') return g.coordinates.slice();
+
+    if (g.type === 'LineString' || g.type === 'MultiLineString') {
+      try {
+        const totalKm = turf.length(f.geojson, { units: 'kilometers' });
+        if (totalKm > 1e-6) {
+          const mid = turf.along(f.geojson, totalKm / 2, { units: 'kilometers' });
+          if (mid && mid.geometry && mid.geometry.coordinates) return mid.geometry.coordinates.slice();
+        }
+        const coords = g.type === 'LineString'
+          ? g.coordinates
+          : (g.coordinates[0] && g.coordinates[0].length ? g.coordinates[0] : null);
+        if (coords && coords.length) return coords[Math.floor(coords.length / 2)].slice();
+      } catch (_) {}
+      return null;
+    }
+
+    if (g.type === 'Polygon' || g.type === 'MultiPolygon') {
+      try {
+        let inner = null;
+        if (dk === 'buffer' && f.geojson.properties._bufferSourceId) {
+          inner = allFeatures.find(x => x.id === f.geojson.properties._bufferSourceId) || null;
+        }
+        if (!inner) inner = findEnclosedFeature(f, allFeatures);
+        if (inner) {
+          const innerC = turf.centroid(inner.geojson).geometry.coordinates;
+          if (dk === 'buffer' || turf.area(f.geojson) > turf.area(inner.geojson) * 1.05) {
+            const exterior = ringExteriorPointAwayFrom(f.geojson, innerC);
+            if (exterior) return exterior.slice();
+          }
+        }
+        if (dk === 'buffer') {
+          const c = turf.centroid(f.geojson).geometry.coordinates;
+          const exterior = ringExteriorPointAwayFrom(f.geojson, c);
+          if (exterior) return exterior.slice();
+        }
+        const pt = turf.pointOnFeature(f.geojson);
+        if (pt && pt.geometry && pt.geometry.coordinates) return pt.geometry.coordinates.slice();
+      } catch (_) {}
+      const c = polyCentroid(f);
+      return c ? c.slice() : null;
+    }
+    return null;
+  }
+
+  function separateLabelAnchors(items, minMeters = 55) {
+    if (items.length < 2) return;
+    items.sort((a, b) => b.priority - a.priority);
+    for (let iter = 0; iter < 16; iter++) {
+      let moved = false;
+      for (let i = 0; i < items.length; i++) {
+        for (let j = i + 1; j < items.length; j++) {
+          let dist = 0;
+          try {
+            dist = turf.distance(
+              turf.point(items[i].anchor), turf.point(items[j].anchor),
+              { units: 'meters' }
+            );
+          } catch (_) { continue; }
+          if (dist >= minMeters) continue;
+          const pushM = (minMeters - dist) / 2 + 8;
+          if (dist < 0.5) {
+            const hash = String(items[j].id || j).split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+            const dest = turf.destination(
+              turf.point(items[j].anchor), minMeters, (hash % 8) * 45,
+              { units: 'meters' }
+            );
+            items[j].anchor = dest.geometry.coordinates.slice();
+          } else {
+            const brng = turf.bearing(turf.point(items[i].anchor), turf.point(items[j].anchor));
+            if (items[i].priority >= items[j].priority) {
+              const dest = turf.destination(turf.point(items[j].anchor), pushM, brng, { units: 'meters' });
+              items[j].anchor = dest.geometry.coordinates.slice();
+            } else {
+              const dest = turf.destination(
+                turf.point(items[i].anchor), pushM, (brng + 180) % 360,
+                { units: 'meters' }
+              );
+              items[i].anchor = dest.geometry.coordinates.slice();
+            }
+          }
+          moved = true;
+        }
+      }
+      if (!moved) break;
+    }
+  }
+
+  function buildLabelFeatures() {
+    const candidates = [];
+    for (const f of state.features) {
+      if (!isFeatureVisible(f)) continue;
+      if (f.style && f.style.showLabel === false) continue;
+      const anchor = computeLabelAnchor(f, state.features);
+      if (!anchor) continue;
+      candidates.push({
+        id: f.id,
+        priority: computeLabelPriority(f),
+        anchor,
+        name: (f.name && String(f.name).trim()) ? f.name : nameForKind(f.kind),
+      });
+    }
+    separateLabelAnchors(candidates, 55);
+    return candidates.map(c => ({
+      type: 'Feature',
+      id: c.id,
+      geometry: { type: 'Point', coordinates: c.anchor },
+      properties: { id: c.id, name: c.name, priority: c.priority },
+    }));
+  }
+
+  function applyLabelFeatures(labelFeatures) {
+    if (!map.isStyleLoaded()) return false;
+    if (!map.getSource(SRC_LABELS)) {
+      try { installAppLayers(); } catch (_) { return false; }
+    }
+    try {
+      const src = map.getSource(SRC_LABELS);
+      const fc = { type: 'FeatureCollection', features: labelFeatures || [] };
+      // Hard reset prevents ghost labels after delete on mobile MapLibre builds.
+      src.setData({ type: 'FeatureCollection', features: [] });
+      src.setData(fc);
+      if (map.getLayer('app-label')) {
+        try { map.moveLayer('app-label'); } catch (_) {}
+      }
+      map.triggerRepaint();
+      return true;
+    } catch (err) {
+      log.warn('[HydraulicGIS] applyLabelFeatures failed:', err);
+      return false;
+    }
   }
 
   function syncFeaturesToMap() {
@@ -2125,62 +2321,12 @@
       catch (err) { log.warn('[HydraulicGIS] layer reinstall failed:', err); return; }
     }
 
-    // Build labels for features (terra-draw doesn't render names).
-    // Per user spec, bigger features get higher priority so when labels
-    // overlap, the larger feature's label wins. We compute priority from
-    // the feature's metric: log of length (lines) or sqrt of area (polys).
-    const labels = [];
-    for (const f of state.features) {
-      if (!f.style || f.style.visible === false) continue;
-      // Treat missing showLabel as enabled so legacy saved features still show labels.
-      if (f.style && f.style.showLabel === false) continue;
-      // Priority: 0 (low) → 100 (high). We use metric magnitude so a 1km
-      // line wins over a 10m line, and a 1ha polygon wins over a 1m² one.
-      let priority = 0;
-      if (f.metrics && f.metrics.lengthMeters) {
-        priority = Math.round(Math.log10(Math.max(1, f.metrics.lengthMeters)) * 20);
-      } else if (f.metrics && f.metrics.areaSquareMeters) {
-        priority = Math.round(Math.log10(Math.max(1, f.metrics.areaSquareMeters)) * 15);
-      }
-      const props = { id: f.id, name: (f.name && String(f.name).trim()) ? f.name : nameForKind(f.kind), priority };
-      if (f.kind === 'point') {
-        labels.push({ type: 'Feature', geometry: f.geojson.geometry, properties: props });
-      } else if (f.kind === 'line') {
-        // For lines, place the label at the midpoint regardless of length —
-        // even short lines should have a visible label. We also handle the
-        // edge case where turf.along fails (e.g. degenerate 0-length line).
-        try {
-          const totalKm = turf.length(f.geojson, { units: 'kilometers' });
-          let labelPt = null;
-          if (totalKm > 1e-6) {
-            const mid = turf.along(f.geojson, totalKm / 2, { units: 'kilometers' });
-            labelPt = mid && mid.geometry;
-          }
-          // Fallback: take the geometric midpoint of the coordinate list
-          if (!labelPt) {
-            const coords = f.geojson.geometry.coordinates;
-            if (coords && coords.length > 0) {
-              const midIdx = Math.floor(coords.length / 2);
-              labelPt = { type: 'Point', coordinates: coords[midIdx] };
-            }
-          }
-          if (labelPt) {
-            labels.push({ type: 'Feature', geometry: labelPt, properties: props });
-          }
-        } catch (e) {
-          log.warn('[HydraulicGIS] line label failed for', f.id, e);
-        }
-      } else {
-        const c = polyCentroid(f);
-        if (c) labels.push({ type: 'Feature', geometry: { type: 'Point', coordinates: c }, properties: props });
-      }
-    }
+    // Build labels with separated anchor positions so nearby objects
+    // (circle + buffer, overlapping polygons, etc.) stay readable.
+    const labels = buildLabelFeatures();
 
     try {
-      if (map.getLayer('app-label')) {
-        try { map.setLayoutProperty('app-label', 'text-font', ['Open Sans Regular', 'Arial Unicode MS Regular']); } catch (_) {}
-      }
-      map.getSource(SRC_LABELS).setData({ type: 'FeatureCollection', features: labels });
+      applyLabelFeatures(labels);
     } catch (err) {
       log.warn('[HydraulicGIS] label setData failed:', err);
     }
@@ -4732,7 +4878,7 @@
         const newF = addFeature({
           type: 'Feature',
           geometry: buffered.geometry,
-          properties: { _derived: true, _derivedKind: 'buffer' }
+          properties: { _derived: true, _derivedKind: 'buffer', _bufferSourceId: src.id }
         }, 'polygon', { name: `Buffer ${radius}m de ${src.name}` });
         ensureDerivedLayers();
         syncDerivedLayer();
