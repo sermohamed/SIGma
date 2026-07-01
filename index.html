@@ -853,7 +853,7 @@
   </style>
 </head>
 <body>
-  <div id="build-badge">Atlas GIS · build 2026-07-01·q (groups + bornage)</div>
+  <div id="build-badge">Atlas GIS · build 2026-07-01·r (bornage import + fixes)</div>
   <div id="app">
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
@@ -1404,6 +1404,176 @@
     return `${KIND_LABEL[kind]} ${n}`;
   }
 
+  function isDerivedFeature(f) {
+    return !!(f && f.geojson && f.geojson.properties && f.geojson.properties._derived);
+  }
+
+  function isFeatureVisible(f) {
+    return !!(f && f.style && f.style.visible !== false);
+  }
+
+  function pushFeatureToTerraDraw(f) {
+    if (!f || !f.geojson || !f.geojson.geometry || isDerivedFeature(f)) return false;
+    try {
+      const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
+      if (!td || typeof td.addFeatures !== 'function') return false;
+      let tid = f.geojson.properties && f.geojson.properties._terraId;
+      if (!tid) {
+        tid = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : 'restored-' + f.id;
+        f.geojson.properties = { ...(f.geojson.properties || {}), _terraId: tid };
+      }
+      const tdMode = ({ point: 'point', line: 'linestring', polygon: 'polygon',
+                        rectangle: 'rectangle', circle: 'circle', freehand: 'freehand' })[f.kind] || 'polygon';
+      td.addFeatures([{
+        id: tid,
+        type: 'Feature',
+        geometry: f.geojson.geometry,
+        properties: { ...(f.geojson.properties || {}), mode: tdMode },
+      }]);
+      return true;
+    } catch (err) {
+      log.warn('[HydraulicGIS] pushFeatureToTerraDraw failed:', err);
+      return false;
+    }
+  }
+
+  function restoreFeaturesToTerraDraw() {
+    let count = 0;
+    for (const f of state.features) {
+      if (isDerivedFeature(f) || !isFeatureVisible(f)) continue;
+      if (pushFeatureToTerraDraw(f)) count++;
+    }
+    if (count) log.info('[HydraulicGIS] restored', count, 'feature(s) into terra-draw');
+    return count;
+  }
+
+  function restorePersistedMapState() {
+    try {
+      installAppLayers();
+      ensureDerivedLayers();
+      syncDerivedLayer();
+      syncFeaturesToMap();
+      restoreFeaturesToTerraDraw();
+      syncFeaturesToMap();
+    } catch (err) {
+      log.warn('[HydraulicGIS] restorePersistedMapState failed:', err);
+    }
+  }
+
+  function clearEphemeralMarkers() {
+    try {
+      if (flyToMarker) { flyToMarker.remove(); flyToMarker = null; }
+      if (searchMarker) { searchMarker.remove(); searchMarker = null; }
+    } catch (_) {}
+  }
+
+  function createNavPoint(lng, lat, nameHint) {
+    clearEphemeralMarkers();
+    const nm = nameHint || `Point (${lng.toFixed(5)}, ${lat.toFixed(5)})`;
+    const f = addFeature({
+      type: 'Feature',
+      geometry: { type: 'Point', coordinates: [lng, lat] },
+      properties: { _navPoint: true },
+    }, 'point', { name: nm });
+    pushFeatureToTerraDraw(f);
+    notifyFeaturesMapOnly();
+    return f;
+  }
+
+  function syncContourLabelsFromStore() {
+    try {
+      ensureContourLabelsLayer();
+      const elabSrc = map.getSource('app-contour-labels');
+      if (!elabSrc) return;
+      const allLabels = [];
+      for (const f of state.features) {
+        if (!f.geojson || !f.geojson.properties || f.geojson.properties._derivedKind !== 'contours') continue;
+        const stored = f.geojson.properties._elevationLabels;
+        if (!Array.isArray(stored)) continue;
+        for (const lab of stored) {
+          if (lab && lab.properties) {
+            allLabels.push({
+              ...lab,
+              properties: { ...lab.properties, contourOwnerId: f.id },
+            });
+          }
+        }
+      }
+      elabSrc.setData({ type: 'FeatureCollection', features: allLabels });
+    } catch (e) {
+      log.warn('[HydraulicGIS] syncContourLabelsFromStore failed:', e);
+    }
+  }
+
+  function parseBornageTable(text) {
+    const lines = String(text || '').trim().split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+    if (!lines.length) return { error: 'Fichier vide.' };
+    const splitRow = (line, sep) => {
+      if (sep === '\t') return line.split('\t').map(c => c.trim().replace(/^"|"$/g, ''));
+      const out = [];
+      let cur = '', inQ = false;
+      for (let i = 0; i < line.length; i++) {
+        const ch = line[i];
+        if (ch === '"') { inQ = !inQ; continue; }
+        if (!inQ && ch === sep) { out.push(cur.trim()); cur = ''; continue; }
+        cur += ch;
+      }
+      out.push(cur.trim());
+      return out.map(c => c.replace(/^"|"$/g, ''));
+    };
+    const headerLine = lines[0];
+    const sep = headerLine.includes(';') ? ';' : headerLine.includes('\t') ? '\t' : ',';
+    const headers = splitRow(headerLine, sep).map(h => h.toLowerCase().replace(/^\ufeff/, ''));
+    const borneIdx = headers.findIndex(h => h === 'borne' || h.includes('borne'));
+    const xIdx = headers.findIndex(h => h === 'x' || h === 'longitude' || h === 'lon' || h === 'lng');
+    const yIdx = headers.findIndex(h => h === 'y' || h === 'latitude' || h === 'lat');
+    if (xIdx < 0 || yIdx < 0) return { error: 'Colonnes « borne », « X » et « Y » requises (ligne d\'en-tête).' };
+    const rows = [];
+    for (let i = 1; i < lines.length; i++) {
+      const cols = splitRow(lines[i], sep);
+      if (!cols.length || cols.every(c => !c)) continue;
+      const borne = borneIdx >= 0 ? cols[borneIdx] : `B${String(i).padStart(2, '0')}`;
+      const xRaw = cols[xIdx], yRaw = cols[yIdx];
+      if (!xRaw || !yRaw) continue;
+      let x = parseCoord(xRaw);
+      if (x === null) x = parseFloat(String(xRaw).replace(/[\s\u00A0\u202F\u2007]/g, '').replace(',', '.'));
+      let y = parseCoord(yRaw);
+      if (y === null) y = parseFloat(String(yRaw).replace(/[\s\u00A0\u202F\u2007]/g, '').replace(',', '.'));
+      if (!isFinite(x) || !isFinite(y)) continue;
+      rows.push({ borne, x, y });
+    }
+    if (!rows.length) return { error: 'Aucune ligne de coordonnées valide trouvée.' };
+    return { rows };
+  }
+
+  function importBornageRows(rows, crs, replace) {
+    if (!state._bornage) state._bornage = { crs: 'wgs84', points: [] };
+    if (replace) state._bornage.points = [];
+    const pts = state._bornage.points;
+    let added = 0, skipped = 0;
+    for (const row of rows) {
+      let lng, lat;
+      try {
+        if (crs === 'wgs84') { lng = row.x; lat = row.y; }
+        else { const r = reproject([row.x, row.y], crs, 'wgs84'); lng = r[0]; lat = r[1]; }
+      } catch (_) { skipped++; continue; }
+      if (!isFinite(lng) || !isFinite(lat) || Math.abs(lat) > 90 || Math.abs(lng) > 180) { skipped++; continue; }
+      if (pts.length) {
+        const prev = pts[pts.length - 1];
+        let dkm = Infinity;
+        try { dkm = turf.distance([prev.lng, prev.lat], [lng, lat], { units: 'kilometers' }); } catch (_) {}
+        if (dkm > 100) { skipped++; continue; }
+      }
+      const coordTxt = crs === 'wgs84'
+        ? `${lng.toFixed(6)}, ${lat.toFixed(6)}`
+        : `${formatProjected(row.x, 1)} ; ${formatProjected(row.y, 1)}`;
+      const label = row.borne ? `${row.borne} (${coordTxt})` : coordTxt;
+      pts.push({ lng, lat, x: row.x, y: row.y, crs, label, borne: row.borne });
+      added++;
+    }
+    return { added, skipped };
+  }
+
   function addFeature(geojson, kind, overrides = {}) {
     // ─── Defensive de-duplication ───────────────────────────────────
     // If geojson.properties._terraId is set AND we already have a row
@@ -1460,27 +1630,19 @@
     }
     state.features = state.features.filter(f2 => f2.id !== id);
     state.selectedIds = state.selectedIds.filter(x => x !== id);
-    // If this was a contour feature, clear its elevation labels too. We
-    // don't have a back-link from labels to the parent feature, so we
-    // re-emit only the labels that belong to STILL-EXISTING contour
-    // features. Practically: if no contour features remain, wipe all.
+    // Prune elevation labels and derived overlays tied to deleted features.
+    try { syncContourLabelsFromStore(); } catch (_) {}
     try {
-      const stillHasContours = state.features.some(f2 =>
-        f2.geojson && f2.geojson.properties && f2.geojson.properties._derivedKind === 'contours');
-      const labSrc = map.getSource('app-contour-labels');
-      if (labSrc) {
-        if (!stillHasContours) {
-          labSrc.setData({ type: 'FeatureCollection', features: [] });
-        } else if (f && f.geojson && f.geojson.properties && f.geojson.properties._derivedKind === 'contours') {
-          // Remove only labels owned by the deleted contour feature.
-          const cur = labSrc._data || { type: 'FeatureCollection', features: [] };
-          const kept = (cur.features || []).filter(x => !(x && x.properties && x.properties.contourOwnerId === id));
-          labSrc.setData({ type: 'FeatureCollection', features: kept });
-        }
-      }
       const ctrSrc = map.getSource('app-contours');
-      if (ctrSrc && !stillHasContours) {
-        ctrSrc.setData({ type: 'FeatureCollection', features: [] });
+      if (ctrSrc) {
+        const contourFeats = state.features.filter(f2 =>
+          f2.geojson && f2.geojson.properties && f2.geojson.properties._derivedKind === 'contours');
+        ctrSrc.setData({
+          type: 'FeatureCollection',
+          features: contourFeats.map(f2 => ({
+            type: 'Feature', id: f2.id, geometry: f2.geojson.geometry, properties: { id: f2.id },
+          })),
+        });
       }
     } catch (_) {}
     notifyFeatures();
@@ -1800,8 +1962,7 @@
   map.getCanvas().addEventListener('webglcontextrestored', () => {
     log.info('[HydraulicGIS] WebGL context restored — reinstalling app layers.');
     try {
-      installAppLayers();
-      syncFeaturesToMap();
+      restorePersistedMapState();
       updateGrid();
     } catch (err) { log.error('[HydraulicGIS] restore failed:', err); }
   }, false);
@@ -1810,10 +1971,29 @@
   // Zoom is via pinch (mobile) or wheel (desktop); a dedicated
   // "fit-to-features" button is provided in #view-controls instead.
   map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-left');
-  map.addControl(new maplibregl.GeolocateControl({
+  const geoControl = new maplibregl.GeolocateControl({
     positionOptions: { enableHighAccuracy: true },
     trackUserLocation: true,
-  }), 'top-right');
+  });
+  map.addControl(geoControl, 'top-right');
+  // Dismissing the browser permission prompt leaves the button disabled;
+  // reset it so the user can try again.
+  function resetGeolocateButton() {
+    requestAnimationFrame(() => {
+      const btn = document.querySelector('.maplibregl-ctrl-geolocate');
+      if (!btn) return;
+      btn.classList.remove(
+        'maplibregl-ctrl-geolocate-active',
+        'maplibregl-ctrl-geolocate-active-error',
+        'maplibregl-ctrl-geolocate-disabled'
+      );
+      btn.disabled = false;
+      btn.removeAttribute('aria-disabled');
+    });
+  }
+  geoControl.on('error', resetGeolocateButton);
+  geoControl.on('outofmaxbounds', resetGeolocateButton);
+  geoControl.on('trackuserlocationend', resetGeolocateButton);
 
   // Live coords status bar (desktop)
   map.on('mousemove', (e) => {
@@ -1908,19 +2088,14 @@
         // Minimal offset: label sits very close to the geometry centroid.
         'text-offset': [0, 0.6],
         'text-anchor': 'top',
-        // CRITICAL: allow overlap so the labels actually render. Without
-        // this, MapLibre's placement engine finds the basemap labels (ESRI
-        // World Imagery already serves road/place names) and our user-name
-        // labels collide with them and get hidden. Forcing them visible
-        // is the only way the user actually sees them. We accept that two
-        // user labels right next to each other may overlap; the priority
-        // below mitigates this for the common case.
-        'text-allow-overlap': true,
+        // Collide within our label layer (readable), but ignore basemap
+        // labels so object names still appear over satellite imagery.
+        'text-allow-overlap': false,
         'text-ignore-placement': true,
-        // Higher priority value = drawn LATER = on top. We invert priority
-        // so big features have higher z and land above small ones in the
-        // rare case where two of OUR labels overlap.
-        'symbol-sort-key': ['*', -1, ['coalesce', ['get', 'priority'], 0]],
+        'text-optional': true,
+        'text-padding': 4,
+        // Higher priority value = drawn later = on top when placement allows.
+        'symbol-sort-key': ['coalesce', ['get', 'priority'], 0],
       },
       paint: {
         'text-color': '#ffffff',
@@ -2042,9 +2217,10 @@
       if (map.getLayer('app-label')) map.moveLayer('app-label');
     } catch (_) {}
 
-    // Re-sync derived features (buffers, intersections) so visibility
-    // toggles in Calques affect them too.
+    // Re-sync derived features (buffers, intersections, contours) so
+    // visibility toggles in Calques affect them too.
     try { syncDerivedLayer(); } catch (_) {}
+    try { syncContourLabelsFromStore(); } catch (_) {}
     // Live legend refresh: visible/name/style changes flow into the box
     // without any user intervention.
     try { if (typeof updateLegendBox === 'function') updateLegendBox(); } catch (_) {}
@@ -2370,7 +2546,7 @@
         const tdLike = drawControl.getTerraDrawInstance();
         if (tdLike && state.features.length && typeof tdLike.addFeatures === 'function') {
           const gmFeatures = state.features
-            .filter(f => f.geojson && f.geojson.geometry)
+            .filter(f => f.geojson && f.geojson.geometry && !isDerivedFeature(f))
             .map(f => {
               let tid = f.geojson.properties && f.geojson.properties._terraId;
               if (!tid) {
@@ -3674,16 +3850,8 @@
     map.setStyle(BASEMAPS[id]);
     map.once('idle', () => {
       installAppLayers();
-      syncFeaturesToMap();
+      restorePersistedMapState();
       updateGrid();
-      // Re-inject terra-draw's features. The wrapper itself doesn't
-      // re-add them automatically after setStyle.
-      try {
-        const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
-        if (td && tdSnapshot.length && typeof td.addFeatures === 'function') {
-          td.addFeatures(tdSnapshot);
-        }
-      } catch (err) { log.warn('[HydraulicGIS] re-adding td features after basemap change failed:', err); }
     });
 
     document.querySelectorAll('.basemap-btn[data-basemap]').forEach(b => {
@@ -3694,44 +3862,12 @@
   map.once('load', () => {
     installAppLayers();
     installDrawControl();
-    syncFeaturesToMap();
-    updateGrid(); // initial grid state
-
-    // Push any features loaded from localStorage into terra-draw so they
-    // render on the map (terra-draw is the renderer; without this, saved
-    // features would only appear in the Calques panel, not on the map).
-    try {
-      const td = drawControl && drawControl.getTerraDrawInstance && drawControl.getTerraDrawInstance();
-      if (td && state.features.length && typeof td.addFeatures === 'function') {
-        const tdFeatures = state.features
-          .filter(f => f.geojson && f.geojson.geometry)
-          .map(f => {
-            // terra-draw needs a stable id. Either use existing _terraId,
-            // or assign a fresh one and link it back.
-            let tid = f.geojson.properties && f.geojson.properties._terraId;
-            if (!tid) {
-              tid = (typeof crypto !== 'undefined' && crypto.randomUUID) ? crypto.randomUUID() : 'restored-' + f.id;
-              f.geojson.properties = { ...(f.geojson.properties || {}), _terraId: tid };
-            }
-            // Each terra-draw feature needs a `mode` property so it knows
-            // which mode owns it (for select/edit/delete).
-            const tdMode = ({ point: 'point', line: 'linestring', polygon: 'polygon',
-                              rectangle: 'rectangle', circle: 'circle', freehand: 'freehand' })[f.kind] || 'polygon';
-            return {
-              id: tid,
-              type: 'Feature',
-              geometry: f.geojson.geometry,
-              properties: { ...(f.geojson.properties || {}), mode: tdMode },
-            };
-          });
-        if (tdFeatures.length) {
-          td.addFeatures(tdFeatures);
-          log.info('[HydraulicGIS] restored', tdFeatures.length, 'feature(s) into terra-draw');
-        }
-      }
-    } catch (err) {
-      log.warn('[HydraulicGIS] restoring features into terra-draw failed:', err);
-    }
+    restorePersistedMapState();
+    updateGrid();
+    // Retry restore — terra-draw layers may not be ready on first tick.
+    requestAnimationFrame(() => restorePersistedMapState());
+    setTimeout(() => restorePersistedMapState(), 300);
+    map.once('idle', () => restorePersistedMapState());
   });
   onFeatures(syncFeaturesToMap);
 
@@ -4331,6 +4467,18 @@
             <button class="btn btn-solid" id="bn-add" style="white-space:nowrap;">+ Point</button>
           </div>
           <div id="bn-msg" style="font-size:12px; margin-top:8px;"></div>
+          <div style="margin-top:10px;">
+            <label class="field-label" style="font-size:11px;">Importer un fichier (CSV / TSV)</label>
+            <p style="font-size:11px; color:var(--ink-2); margin:4px 0 8px;">
+              Table avec colonnes <strong>borne</strong>, <strong>X</strong>, <strong>Y</strong> (séparateur virgule, point-virgule ou tabulation).
+            </p>
+            <input type="file" id="bn-file" accept=".csv,.txt,.tsv,text/csv,text/plain" style="display:none;" />
+            <button class="btn btn-subtle" id="bn-import" style="width:100%;">Choisir un fichier…</button>
+            <label style="display:flex; align-items:center; gap:8px; font-size:11px; color:var(--ink-1); margin-top:8px;">
+              <input type="checkbox" id="bn-replace" checked />
+              Remplacer les points déjà saisis
+            </label>
+          </div>
           <div id="bn-list" style="margin-top:8px;"></div>
           <button class="btn btn-solid" id="bn-finish" style="width:100%; margin-top:10px;">Terminer le polygone</button>
         </div>
@@ -4509,8 +4657,35 @@
 
       addBtn.addEventListener('click', (e) => { e.preventDefault(); addPoint(); });
       finishBtn.addEventListener('click', (e) => { e.preventDefault(); finish(); });
-      // Enter in the Y field adds the point quickly.
       if (yIn) yIn.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') { ev.preventDefault(); addPoint(); } });
+
+      const fileIn = root.querySelector('#bn-file');
+      const importBtn = root.querySelector('#bn-import');
+      const replaceCb = root.querySelector('#bn-replace');
+      if (importBtn && fileIn) {
+        importBtn.addEventListener('click', (e) => { e.preventDefault(); fileIn.click(); });
+        fileIn.addEventListener('change', () => {
+          const file = fileIn.files && fileIn.files[0];
+          fileIn.value = '';
+          if (!file) return;
+          const reader = new FileReader();
+          reader.onload = () => {
+            const parsed = parseBornageTable(reader.result);
+            if (parsed.error) { showMsg(parsed.error, 'err'); return; }
+            const crs = state._bornage.crs;
+            const { added, skipped } = importBornageRows(parsed.rows, crs, !!(replaceCb && replaceCb.checked));
+            renderList();
+            if (added === 0) {
+              showMsg('Aucun point importé. Vérifiez le système de coordonnées et le format.', 'err');
+            } else {
+              const skipNote = skipped ? ` (${skipped} ignoré${skipped > 1 ? 's' : ''})` : '';
+              showMsg(`${added} point${added > 1 ? 's' : ''} importé${added > 1 ? 's' : ''}${skipNote}.`, 'ok');
+            }
+          };
+          reader.onerror = () => showMsg('Lecture du fichier impossible.', 'err');
+          reader.readAsText(file, 'UTF-8');
+        });
+      }
     })();
 
     // Buffer
@@ -4818,9 +4993,6 @@
         const newF = addFeature({
           type: 'Feature',
           geometry: merged,
-          // _derived flags it for our app-derived layer renderer.
-          // _kind:'contours' lets us identify and style it differently
-          // (and also lets the elevation-label generator find it).
           properties: { _derived: true, _derivedKind: 'contours' }
         }, 'line', { name: `Courbes ${step}m de ${poly.name}` });
 
@@ -4831,7 +5003,6 @@
         for (const lf of allFeatures) {
           const segs = lf.geometry.coordinates;
           if (!segs.length) continue;
-          // Pick the midpoint of the longest segment as label anchor.
           let bestSeg = segs[0];
           let bestLen = 0;
           for (const s of segs) {
@@ -4846,21 +5017,13 @@
             properties: { elevation: lf.properties.level, contourOwnerId: newF.id },
           });
         }
+        // Persist labels on the feature so they survive page refresh.
+        newF.geojson.properties._elevationLabels = elevationLabelFeatures;
+        saveState();
         ensureContourLabelsLayer();
-        const elabSrc = map.getSource('app-contour-labels');
-        if (elabSrc) {
-          // Keep accumulated labels for prior contour features by reading
-          // current data and appending.
-          const curData = elabSrc._data || { type: 'FeatureCollection', features: [] };
-          elabSrc.setData({
-            type: 'FeatureCollection',
-            features: [...(curData.features || []), ...elevationLabelFeatures],
-          });
-        }
+        syncContourLabelsFromStore();
 
         ensureDerivedLayers();
-        // The contour line itself is rendered by app-derived-line via
-        // syncDerivedLayer (it picks up the new feature via _derived: true).
         syncDerivedLayer();
         notifyFeatures();
         if (result) {
@@ -5142,7 +5305,7 @@
       if (!map.getLayer('app-derived-line')) {
         map.addLayer({
           id: 'app-derived-line', type: 'line', source: 'app-derived',
-          filter: ['==', ['geometry-type'], 'LineString'],
+          filter: ['in', ['geometry-type'], ['literal', ['LineString', 'MultiLineString']]],
           paint: {
             'line-color': ['coalesce', ['get', 'stroke'], '#3aa0ff'],
             'line-width': ['coalesce', ['get', 'strokeWidth'], 2.5],
@@ -5185,23 +5348,43 @@
   function syncDerivedLayer() {
     try {
       ensureDerivedLayers();
-      const src = map.getSource('app-derived');
-      if (!src) return;
-      const features = state.features
+      const visibleDerived = state.features
         .filter(f => f.geojson && f.geojson.properties && f.geojson.properties._derived)
-        .filter(f => f.style && f.style.visible)
-        .map(f => ({
-          type: 'Feature',
-          geometry: f.geojson.geometry,
-          properties: {
+        .filter(f => isFeatureVisible(f));
+
+      const contourFeatures = visibleDerived.filter(f => f.geojson.properties._derivedKind === 'contours');
+      const otherDerived = visibleDerived.filter(f => f.geojson.properties._derivedKind !== 'contours');
+
+      const ctrSrc = map.getSource('app-contours');
+      if (ctrSrc) {
+        ctrSrc.setData({
+          type: 'FeatureCollection',
+          features: contourFeatures.map(f => ({
+            type: 'Feature',
             id: f.id,
-            stroke: f.style.stroke,
-            strokeWidth: f.style.strokeWidth,
-            fill: f.style.fill,
-            fillOpacity: f.style.fillOpacity,
-          },
-        }));
-      src.setData({ type: 'FeatureCollection', features });
+            geometry: f.geojson.geometry,
+            properties: { id: f.id },
+          })),
+        });
+      }
+
+      const src = map.getSource('app-derived');
+      if (src) {
+        src.setData({
+          type: 'FeatureCollection',
+          features: otherDerived.map(f => ({
+            type: 'Feature',
+            geometry: f.geojson.geometry,
+            properties: {
+              id: f.id,
+              stroke: f.style.stroke,
+              strokeWidth: f.style.strokeWidth,
+              fill: f.style.fill,
+              fillOpacity: f.style.fillOpacity,
+            },
+          })),
+        });
+      }
       // Keep above td-* on every sync.
       for (const id of ['app-derived-fill', 'app-derived-outline', 'app-derived-line', 'app-derived-point', 'app-contours-line']) {
         if (map.getLayer(id)) try { map.moveLayer(id); } catch (_) {}
@@ -5513,7 +5696,7 @@
           else if (h.to === 'wgs84') { [lng, lat] = h.out; }
           else { [lng, lat] = reproject(h.in, h.from, 'wgs84'); }
           map.flyTo({ center: [lng, lat], zoom: Math.min(13, map.getMaxZoom()), essential: true });
-          placeFlyToMarker(lng, lat);
+          createNavPoint(lng, lat);
         });
       });
     }
@@ -5533,9 +5716,7 @@
       // Also: cap by the map's maxZoom in case the user has overridden it.
       const targetZoom = Math.min(13, map.getMaxZoom());
       map.flyTo({ center: [lng, lat], zoom: targetZoom, essential: true });
-      // Drop a visible pin at the destination so the user actually sees
-      // where they flew to. We reuse the search marker mechanic.
-      placeFlyToMarker(lng, lat);
+      createNavPoint(lng, lat, `Point (${lng.toFixed(5)}, ${lat.toFixed(5)})`);
     });
   }
 
@@ -5685,11 +5866,8 @@
         errEl.textContent = 'Coordonnées hors limites.'; return;
       }
 
-      // Place / move marker
-      if (searchMarker) searchMarker.remove();
-      const dot = document.createElement('div');
-      dot.style.cssText = 'width:18px;height:18px;border-radius:50%;background:#3aa0ff;border:3px solid #fff;box-shadow:0 0 0 2px rgba(58,160,255,0.5),0 2px 6px rgba(0,0,0,0.4);cursor:pointer;';
-      searchMarker = new maplibregl.Marker({ element: dot }).setLngLat([lng, lat]).addTo(map);
+      // Register as a deletable point object in Calques.
+      createNavPoint(lng, lat, raw || `Point (${lng.toFixed(5)}, ${lat.toFixed(5)})`);
       map.flyTo({ center: [lng, lat], zoom: Math.min(13, map.getMaxZoom()), essential: true });
 
       // Add to history
@@ -5700,7 +5878,7 @@
     root.querySelector('#sr-go').addEventListener('click', go);
     inp.addEventListener('keydown', (e) => { if (e.key === 'Enter') go(); });
     root.querySelector('#sr-clear').addEventListener('click', () => {
-      if (searchMarker) { searchMarker.remove(); searchMarker = null; }
+      clearEphemeralMarkers();
       inp.value = '';
       errEl.textContent = '';
     });
