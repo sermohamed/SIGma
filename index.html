@@ -817,7 +817,7 @@
   </style>
 </head>
 <body>
-  <div id="build-badge">Atlas GIS · build 2026-07-01·m</div>
+  <div id="build-badge">Atlas GIS · build 2026-07-01·n</div>
   <div id="app">
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
@@ -3163,6 +3163,11 @@
           } catch (_) {}
         };
         const enforceYellowSelection = () => {
+          // While Edit is active, do NOTHING: this function disables the
+          // draggable-vertex flags and clears TerraDraw selection, which is
+          // exactly what broke vertex dragging (every tap on a vertex fired it).
+          const _eb = document.getElementById('hgis-edit-btn');
+          if (_eb && _eb.classList.contains('active')) return;
           try { setSelectEditFlags(td, false); } catch (_) {}
           suppressNativeBlueHalo();
           forceYellowHalo();
