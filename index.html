@@ -551,6 +551,7 @@
       cursor: pointer; text-align: left; padding: 2px 0;
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
+    .group-header.selected { border-color: var(--brand); background: rgba(58,160,255,0.08); }
     .group-name:hover { color: var(--brand); }
     .group-body {
       margin: 6px 0 6px 12px;
@@ -567,6 +568,47 @@
       border: 1px solid var(--line); border-radius: 4px;
       font-size: 11px; padding: 3px 6px;
     }
+
+    /* ─── Draw defaults (near draw toolbar) ─── */
+    #draw-defaults {
+      position: absolute;
+      top: 10px;
+      left: 52px;
+      z-index: 4;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      max-width: min(240px, calc(100vw - 120px));
+    }
+    #draw-defaults .dd-toggle {
+      width: 36px; height: 36px;
+      border-radius: 6px;
+      background: var(--bg-2);
+      border: 1px solid var(--line-strong);
+      color: var(--ink-0);
+      cursor: pointer;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: var(--shadow);
+    }
+    #draw-defaults .dd-toggle.active { border-color: var(--brand); color: var(--brand); }
+    #draw-defaults .dd-panel {
+      display: none;
+      background: var(--bg-2);
+      border: 1px solid var(--line-strong);
+      border-radius: 8px;
+      padding: 10px;
+      box-shadow: var(--shadow);
+      font-size: 12px;
+    }
+    #draw-defaults.open .dd-panel { display: block; }
+    #draw-defaults .dd-row { margin-bottom: 8px; }
+    #draw-defaults .dd-row:last-child { margin-bottom: 0; }
+    #draw-defaults .field-label { font-size: 10px; margin-bottom: 3px; }
+    #draw-defaults select.field, #draw-defaults input[type="color"] {
+      width: 100%; min-height: 30px;
+    }
+    #draw-defaults .dd-colors { display: flex; gap: 6px; align-items: center; }
+    #draw-defaults .dd-colors input[type="color"] { width: 36px; height: 30px; padding: 0; flex-shrink: 0; }
 
     .empty-state {
       text-align: center;
@@ -853,7 +895,7 @@
   </style>
 </head>
 <body>
-  <div id="build-badge">Atlas GIS · build 2026-07-01·s (label fix)</div>
+  <div id="build-badge">Atlas GIS · build 2026-07-01·t (calques+style)</div>
   <div id="app">
     <!-- ═════ DESKTOP SIDEBAR ═════ -->
     <aside id="sidebar">
@@ -912,6 +954,33 @@
 
     <!-- ═════ MAP AREA ═════ -->
     <main id="map-area">
+      <!-- Defaults applied to every newly drawn object -->
+      <div id="draw-defaults">
+        <button type="button" class="dd-toggle" id="dd-toggle" title="Défauts pour nouveaux objets" aria-label="Défauts pour nouveaux objets">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 15a3 3 0 100-6 3 3 0 000 6z" stroke="currentColor" stroke-width="2"/><path d="M19.4 15a1.65 1.65 0 00.33 1.82l.06.06a2 2 0 01-2.83 2.83l-.06-.06a1.65 1.65 0 00-1.82-.33 1.65 1.65 0 00-1 1.51V21a2 2 0 01-4 0v-.09A1.65 1.65 0 009 19.4a1.65 1.65 0 00-1.82.33l-.06.06a2 2 0 01-2.83-2.83l.06-.06A1.65 1.65 0 004.68 15a1.65 1.65 0 00-1.51-1H3a2 2 0 010-4h.09A1.65 1.65 0 004.6 9a1.65 1.65 0 00-.33-1.82l-.06-.06a2 2 0 012.83-2.83l.06.06A1.65 1.65 0 009 4.68a1.65 1.65 0 001-1.51V3a2 2 0 014 0v.09a1.65 1.65 0 001 1.51 1.65 1.65 0 001.82-.33l.06-.06a2 2 0 012.83 2.83l-.06.06A1.65 1.65 0 0019.4 9a1.65 1.65 0 001.51 1H21a2 2 0 010 4h-.09a1.65 1.65 0 00-1.51 1z" stroke="currentColor" stroke-width="2"/></svg>
+        </button>
+        <div class="dd-panel" id="dd-panel">
+          <div class="dd-row">
+            <label class="field-label">Couche cible</label>
+            <select id="dd-group" class="field"></select>
+          </div>
+          <div class="dd-row dd-colors">
+            <div style="flex:1;">
+              <label class="field-label">Contour</label>
+              <input type="color" id="dd-stroke" />
+            </div>
+            <div style="flex:1;">
+              <label class="field-label">Remplissage</label>
+              <input type="color" id="dd-fill" />
+            </div>
+          </div>
+          <div class="dd-row">
+            <label class="field-label">Opacité remplissage</label>
+            <input type="range" id="dd-opacity" min="0" max="1" step="0.05" style="width:100%;" />
+          </div>
+          <div style="font-size:10px; color:var(--ink-2); margin-top:6px;">S'applique aux prochains objets dessinés.</div>
+        </div>
+      </div>
       <div id="map"></div>
 
       <!-- Basemap switcher: only Satellite is exposed. Dark/Light were
@@ -1225,9 +1294,14 @@
     features: [],         // tableau d'objets MapFeature
     groups: [],           // couches: { id, name, collapsed } — chaque objet peut avoir un groupId
     selectedIds: [],
-    multiSelectMode: false,  // when true, taps add to selection instead of replacing it
+    selectedGroupIds: [], // couches sélectionnées dans Calques (style en masse)
+    multiSelectMode: false,  // when true, map taps add to selection instead of replacing it
     activePanel: null,
     basemap: 'satellite',  // default: satellite view with city/road labels
+    drawDefaults: {
+      groupId: null,
+      style: { stroke: '#3aa0ff', strokeWidth: 2.5, fill: '#3aa0ff', fillOpacity: 0.30, visible: true, showLabel: true },
+    },
     listeners: { features: [], ui: [] },
   };
   const DRAW_ENGINE = (() => {
@@ -1244,6 +1318,7 @@
   // Persistance localStorage
   const STORAGE_KEY = 'hydraulic-gis:features:v1';
   const GROUPS_KEY = 'hydraulic-gis:groups:v1';
+  const DRAW_DEFAULTS_KEY = 'hydraulic-gis:draw-defaults:v1';
   function loadState() {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
@@ -1255,6 +1330,19 @@
       if (g) {
         const parsed = JSON.parse(g);
         if (Array.isArray(parsed)) state.groups = parsed.filter(x => x && x.id);
+      }
+    } catch (e) {}
+    // Restore draw defaults (style + target layer for new objects).
+    try {
+      const dd = localStorage.getItem(DRAW_DEFAULTS_KEY);
+      if (dd) {
+        const parsed = JSON.parse(dd);
+        if (parsed && typeof parsed === 'object') {
+          if (parsed.groupId !== undefined) state.drawDefaults.groupId = parsed.groupId || null;
+          if (parsed.style && typeof parsed.style === 'object') {
+            state.drawDefaults.style = { ...state.drawDefaults.style, ...parsed.style };
+          }
+        }
       }
     } catch (e) {}
     // Restore basemap preference
@@ -1269,6 +1357,9 @@
     } catch (e) { log.warn('Échec de sauvegarde :', e); }
     try {
       localStorage.setItem(GROUPS_KEY, JSON.stringify(state.groups));
+    } catch (e) {}
+    try {
+      localStorage.setItem(DRAW_DEFAULTS_KEY, JSON.stringify(state.drawDefaults));
     } catch (e) {}
   }
 
@@ -1354,6 +1445,8 @@
         kind,
         geojson,
         style,
+        labelAnchor: (f.labelAnchor && Array.isArray(f.labelAnchor) && f.labelAnchor.length === 2)
+          ? f.labelAnchor.slice() : null,
         metrics: f.metrics || computeMetrics(geojson, kind),
         createdAt: f.createdAt || now,
         updatedAt: f.updatedAt || now,
@@ -1612,6 +1705,9 @@
       ...overrides,
     };
     state.features.push(f);
+    const props = geojson && geojson.properties;
+    const skipDefaults = props && (props._derived || props._navPoint);
+    if (!skipDefaults && overrides.applyDrawDefaults !== false) applyDrawDefaultsToFeature(f);
     notifyFeatures();
     return f;
   }
@@ -1680,6 +1776,7 @@
     //    This was the root cause of contour "ghosts" surviving Tout effacer.
     state.features = [];
     state.selectedIds = [];
+    state.selectedGroupIds = [];
     state.selectActive = false;
 
     // 2) Remove from TerraDraw after leaving select/edit so nothing is locked.
@@ -1740,6 +1837,7 @@
   }
   function deleteGroup(id) {
     state.groups = state.groups.filter(g => g.id !== id);
+    state.selectedGroupIds = state.selectedGroupIds.filter(gid => gid !== id);
     // Members become ungrouped (features are kept).
     state.features.forEach(f => { if (f.groupId === id) f.groupId = null; });
     notifyFeatures(); notifyUi();
@@ -1817,9 +1915,63 @@
     }
   }
 
+  function getFeatureIdsInGroup(gid) {
+    return state.features.filter(f => f.groupId === gid).map(f => f.id);
+  }
+
+  function getAllStyleTargetIds() {
+    const ids = new Set(state.selectedIds);
+    state.selectedGroupIds.forEach(gid => {
+      getFeatureIdsInGroup(gid).forEach(id => ids.add(id));
+    });
+    return Array.from(ids);
+  }
+
+  function describeStyleTargets() {
+    const featIds = getAllStyleTargetIds();
+    const parts = [];
+    if (state.selectedGroupIds.length) {
+      parts.push(`${state.selectedGroupIds.length} couche${state.selectedGroupIds.length > 1 ? 's' : ''}`);
+    }
+    if (featIds.length) {
+      parts.push(`${featIds.length} objet${featIds.length > 1 ? 's' : ''}`);
+    }
+    return { featIds, label: parts.join(', ') || '0 objet' };
+  }
+
+  function toggleGroupSelection(gid) {
+    const isSelected = state.selectedGroupIds.includes(gid);
+    const featIds = getFeatureIdsInGroup(gid);
+    if (isSelected) {
+      state.selectedGroupIds = state.selectedGroupIds.filter(x => x !== gid);
+      state.selectedIds = state.selectedIds.filter(id => !featIds.includes(id));
+    } else {
+      if (!state.selectedGroupIds.includes(gid)) state.selectedGroupIds.push(gid);
+      featIds.forEach(id => { if (!state.selectedIds.includes(id)) state.selectedIds.push(id); });
+    }
+    notifyUi();
+  }
+
+  function applyDrawDefaultsToFeature(f) {
+    if (!f || !state.drawDefaults) return;
+    if (state.drawDefaults.groupId) f.groupId = state.drawDefaults.groupId;
+    if (state.drawDefaults.style) {
+      f.style = { ...f.style, ...state.drawDefaults.style };
+    }
+  }
+
+  function applyStyleToTargets(patch) {
+    getAllStyleTargetIds().forEach(id => setStyle(id, patch));
+  }
+
   function toggleSelect(id) {
+    const f = state.features.find(x => x.id === id);
     if (state.selectedIds.includes(id)) {
       state.selectedIds = state.selectedIds.filter(x => x !== id);
+      if (f && f.groupId) {
+        const stillSelected = getFeatureIdsInGroup(f.groupId).some(fid => state.selectedIds.includes(fid));
+        if (!stillSelected) state.selectedGroupIds = state.selectedGroupIds.filter(g => g !== f.groupId);
+      }
     } else {
       state.selectedIds = [...state.selectedIds, id];
     }
@@ -2174,6 +2326,9 @@
   }
 
   function computeLabelAnchor(f, allFeatures) {
+    if (f.labelAnchor && Array.isArray(f.labelAnchor) && f.labelAnchor.length === 2) {
+      return f.labelAnchor.slice();
+    }
     const g = f.geojson && f.geojson.geometry;
     if (!g) return null;
     const dk = f.geojson.properties && f.geojson.properties._derivedKind;
@@ -2239,25 +2394,27 @@
           } catch (_) { continue; }
           if (dist >= minMeters) continue;
           const pushM = (minMeters - dist) / 2 + 8;
+          const iManual = !!items[i].manual;
+          const jManual = !!items[j].manual;
+          if (iManual && jManual) continue;
+          let moveIdx = j;
+          if (iManual) moveIdx = j;
+          else if (jManual) moveIdx = i;
+          else moveIdx = items[i].priority >= items[j].priority ? j : i;
           if (dist < 0.5) {
-            const hash = String(items[j].id || j).split('').reduce((a, c) => a + c.charCodeAt(0), 0);
+            const hash = String(items[moveIdx].id || moveIdx).split('').reduce((a, c) => a + c.charCodeAt(0), 0);
             const dest = turf.destination(
-              turf.point(items[j].anchor), minMeters, (hash % 8) * 45,
+              turf.point(items[moveIdx].anchor), minMeters, (hash % 8) * 45,
               { units: 'meters' }
             );
-            items[j].anchor = dest.geometry.coordinates.slice();
+            items[moveIdx].anchor = dest.geometry.coordinates.slice();
           } else {
-            const brng = turf.bearing(turf.point(items[i].anchor), turf.point(items[j].anchor));
-            if (items[i].priority >= items[j].priority) {
-              const dest = turf.destination(turf.point(items[j].anchor), pushM, brng, { units: 'meters' });
-              items[j].anchor = dest.geometry.coordinates.slice();
-            } else {
-              const dest = turf.destination(
-                turf.point(items[i].anchor), pushM, (brng + 180) % 360,
-                { units: 'meters' }
-              );
-              items[i].anchor = dest.geometry.coordinates.slice();
-            }
+            const brng = turf.bearing(
+              turf.point(items[moveIdx === j ? i : j].anchor),
+              turf.point(items[moveIdx].anchor)
+            );
+            const dest = turf.destination(turf.point(items[moveIdx].anchor), pushM, brng, { units: 'meters' });
+            items[moveIdx].anchor = dest.geometry.coordinates.slice();
           }
           moved = true;
         }
@@ -2271,12 +2428,14 @@
     for (const f of state.features) {
       if (!isFeatureVisible(f)) continue;
       if (f.style && f.style.showLabel === false) continue;
+      const manual = !!(f.labelAnchor && Array.isArray(f.labelAnchor) && f.labelAnchor.length === 2);
       const anchor = computeLabelAnchor(f, state.features);
       if (!anchor) continue;
       candidates.push({
         id: f.id,
         priority: computeLabelPriority(f),
         anchor,
+        manual,
         name: (f.name && String(f.name).trim()) ? f.name : nameForKind(f.kind),
       });
     }
@@ -2309,6 +2468,145 @@
       log.warn('[HydraulicGIS] applyLabelFeatures failed:', err);
       return false;
     }
+  }
+
+  /* ─── Label drag (edit mode) ─────────────────────────────────────────── */
+  let _labelDrag = { active: false, featureId: null, pointerId: null };
+  let _labelEditInstalled = false;
+
+  function isEditModeActive() {
+    const eb = document.getElementById('hgis-edit-btn');
+    return !!(eb && eb.classList.contains('active'));
+  }
+
+  function ensureLabelHandleLayer() {
+    if (!map.isStyleLoaded()) return;
+    if (!map.getSource('app-label-handles')) {
+      map.addSource('app-label-handles', {
+        type: 'geojson', data: { type: 'FeatureCollection', features: [] },
+      });
+    }
+    if (!map.getLayer('app-label-handles-circle')) {
+      map.addLayer({
+        id: 'app-label-handles-circle', type: 'circle', source: 'app-label-handles',
+        paint: {
+          'circle-radius': 8,
+          'circle-color': '#fbc412',
+          'circle-stroke-color': '#0b0f14',
+          'circle-stroke-width': 2,
+        },
+      });
+    }
+  }
+
+  function syncLabelHandles() {
+    if (!isEditModeActive()) {
+      try {
+        const s = map.getSource('app-label-handles');
+        if (s) s.setData({ type: 'FeatureCollection', features: [] });
+      } catch (_) {}
+      return;
+    }
+    ensureLabelHandleLayer();
+    const handles = [];
+    for (const id of state.selectedIds) {
+      const f = state.features.find(x => x.id === id);
+      if (!f || !isFeatureVisible(f) || (f.style && f.style.showLabel === false)) continue;
+      const anchor = computeLabelAnchor(f, state.features);
+      if (!anchor) continue;
+      handles.push({
+        type: 'Feature',
+        id: 'lh_' + id,
+        geometry: { type: 'Point', coordinates: anchor },
+        properties: { featureId: id },
+      });
+    }
+    try {
+      map.getSource('app-label-handles').setData({ type: 'FeatureCollection', features: handles });
+      if (map.getLayer('app-label-handles-circle')) map.moveLayer('app-label-handles-circle');
+    } catch (_) {}
+  }
+
+  function hitTestLabelHandle(point) {
+    if (!isEditModeActive()) return null;
+    const LABEL_HIT_PX = 28;
+    for (const id of state.selectedIds) {
+      const f = state.features.find(x => x.id === id);
+      if (!f || (f.style && f.style.showLabel === false)) continue;
+      const anchor = computeLabelAnchor(f, state.features);
+      if (!anchor) continue;
+      try {
+        const p = map.project(anchor);
+        if (Math.hypot(p.x - point.x, p.y - point.y) <= LABEL_HIT_PX) return id;
+      } catch (_) {}
+    }
+    return null;
+  }
+
+  function installLabelDragHandlers() {
+    if (_labelEditInstalled) return;
+    _labelEditInstalled = true;
+    const canvas = map.getCanvas();
+
+    const onDown = (e) => {
+      if (!isEditModeActive()) return;
+      const pt = e.point || (e.touches && e.touches[0]
+        ? { x: e.touches[0].clientX - canvas.getBoundingClientRect().left,
+            y: e.touches[0].clientY - canvas.getBoundingClientRect().top }
+        : null);
+      if (!pt) return;
+      const fid = hitTestLabelHandle(pt);
+      if (!fid) return;
+      _labelDrag = { active: true, featureId: fid, pointerId: e.originalEvent && e.originalEvent.pointerId };
+      try { map.dragPan.disable(); } catch (_) {}
+      if (e.originalEvent) {
+        try { e.originalEvent.preventDefault(); e.originalEvent.stopPropagation(); } catch (_) {}
+      }
+    };
+
+    const onMove = (e) => {
+      if (!_labelDrag.active || !_labelDrag.featureId) return;
+      const f = state.features.find(x => x.id === _labelDrag.featureId);
+      if (!f) return;
+      const lngLat = e.lngLat || (e.touches && e.touches[0] && map.unproject([
+        e.touches[0].clientX - canvas.getBoundingClientRect().left,
+        e.touches[0].clientY - canvas.getBoundingClientRect().top,
+      ]));
+      if (!lngLat) return;
+      f.labelAnchor = [lngLat.lng, lngLat.lat];
+      f.updatedAt = Date.now();
+      applyLabelFeatures(buildLabelFeatures());
+      syncLabelHandles();
+      if (e.originalEvent) {
+        try { e.originalEvent.preventDefault(); } catch (_) {}
+      }
+    };
+
+    const onUp = () => {
+      if (!_labelDrag.active) return;
+      _labelDrag = { active: false, featureId: null, pointerId: null };
+      try { map.dragPan.enable(); } catch (_) {}
+      saveState();
+    };
+
+    map.on('mousedown', onDown);
+    map.on('touchstart', onDown);
+    map.on('mousemove', onMove);
+    map.on('touchmove', onMove);
+    map.on('mouseup', onUp);
+    map.on('touchend', onUp);
+    map.on('mouseleave', onUp);
+  }
+
+  function enableLabelEditMode() {
+    installLabelDragHandlers();
+    syncLabelHandles();
+  }
+
+  function disableLabelEditMode() {
+    _labelDrag = { active: false, featureId: null, pointerId: null };
+    try { map.dragPan.enable(); } catch (_) {}
+    syncLabelHandles();
   }
 
   function syncFeaturesToMap() {
@@ -2367,6 +2665,7 @@
     // visibility toggles in Calques affect them too.
     try { syncDerivedLayer(); } catch (_) {}
     try { syncContourLabelsFromStore(); } catch (_) {}
+    try { syncLabelHandles(); } catch (_) {}
     // Live legend refresh: visible/name/style changes flow into the box
     // without any user intervention.
     try { if (typeof updateLegendBox === 'function') updateLegendBox(); } catch (_) {}
@@ -3077,6 +3376,7 @@
                 td2.setMode('static');
                 setSelectEditFlags(td2, false);
                 editBtn.classList.remove('active');
+                disableLabelEditMode();
                 hudLog('Edit OFF');
                 return;
               }
@@ -3087,24 +3387,20 @@
               }
               const firstId = state.selectedIds[0];
               const ours = state.features.find(f => f.id === firstId);
-              if (!ours || !ours.geojson.properties._terraId) {
-                ui.confirm('Édition impossible',
-                  "Cet objet dérivé (buffer/intersection/courbes) ne peut pas être édité.", () => {});
-                return;
-              }
-              // Mark edit active FIRST. selectFeature() below fires the 'select'
-              // event synchronously; if the active flag isn't set yet, our
-              // selection guards run and immediately strip the draggable-vertex
-              // flags + deselect — which is why vertices showed but wouldn't drag.
+              const canGeomEdit = ours && ours.geojson.properties && ours.geojson.properties._terraId
+                && !isDerivedFeature(ours);
               editBtn.classList.add('active');
-              setSelectEditFlags(td2, true);
-              td2.setMode('select');
-              try { td2.selectFeature(ours.geojson.properties._terraId); } catch (e) {}
-              // Re-assert the edit flags on the next frames in case any late
-              // event tried to reset them.
-              setTimeout(() => { try { setSelectEditFlags(td2, true); } catch (_) {} }, 0);
-              setTimeout(() => { try { setSelectEditFlags(td2, true); } catch (_) {} }, 60);
-              hudLog('Edit ON ' + firstId);
+              enableLabelEditMode();
+              if (canGeomEdit) {
+                setSelectEditFlags(td2, true);
+                td2.setMode('select');
+                try { td2.selectFeature(ours.geojson.properties._terraId); } catch (e) {}
+                setTimeout(() => { try { setSelectEditFlags(td2, true); } catch (_) {} }, 0);
+                setTimeout(() => { try { setSelectEditFlags(td2, true); } catch (_) {} }, 60);
+                hudLog('Edit ON ' + firstId);
+              } else {
+                hudLog('Edit labels ON');
+              }
             } catch (err) { hudLog('Edit ERR ' + err.message); }
           };
 
@@ -3179,6 +3475,7 @@
             if (!state.selectActive) {
               try { setSelectEditFlags(td, false); } catch (_) {}
               editBtn.classList.remove('active');
+              disableLabelEditMode();
               // Leaving selection also exits multi-select mode.
               state.multiSelectMode = false;
               multiBtn.classList.remove('active');
@@ -4008,8 +4305,10 @@
   map.once('load', () => {
     installAppLayers();
     installDrawControl();
+    initDrawDefaultsUi();
     restorePersistedMapState();
     updateGrid();
+    installLabelDragHandlers();
     // Retry restore — terra-draw layers may not be ready on first tick.
     requestAnimationFrame(() => restorePersistedMapState());
     setTimeout(() => restorePersistedMapState(), 300);
@@ -4289,6 +4588,7 @@
   }
 
   function groupHeaderHtml(g, feats) {
+    const gSel = state.selectedGroupIds.includes(g.id);
     const anyVisible = feats.some(f => f.style.visible);
     const caret = g.collapsed
       ? `<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`
@@ -4297,9 +4597,9 @@
       ? `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z" stroke="currentColor" stroke-width="2"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="2"/></svg>`
       : `<svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M2 12s3.5-7 10-7c2.4 0 4.4 1 6 2.2M22 12s-3.5 7-10 7c-2.4 0-4.4-1-6-2.2M3 3l18 18" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>`;
     return `
-      <div class="group-header" data-gid="${g.id}">
+      <div class="group-header${gSel ? ' selected' : ''}" data-gid="${g.id}">
         <button class="group-caret" data-action="group-collapse" data-gid="${g.id}" title="Plier/déplier">${caret}</button>
-        <button class="group-name" data-action="group-collapse" data-gid="${g.id}" ondblclick="groupStartRename('${g.id}')" title="${escapeHtml(g.name)}">${escapeHtml(g.name)} <span style="color:var(--ink-2); font-weight:400;">(${feats.length})</span></button>
+        <button class="group-name" data-gid="${g.id}" title="Toucher pour sélectionner · maintenir pour renommer">${escapeHtml(g.name)} <span style="color:var(--ink-2); font-weight:400;">(${feats.length})</span></button>
         <button class="layer-action" data-action="group-visibility" data-gid="${g.id}" title="${anyVisible ? 'Masquer la couche' : 'Afficher la couche'}">${eyeIcon}</button>
         <button class="layer-action danger" data-action="group-delete" data-gid="${g.id}" title="Supprimer la couche (garde les objets)">
           <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M9 7V4h6v3M6 7l1 13h10l1-13" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
@@ -4352,6 +4652,34 @@
   }
 
   function attachLayersEvents(root) {
+    function attachLongPress(el, onLong, onShort) {
+      let timer = null;
+      let longFired = false;
+      const clear = () => { if (timer) { clearTimeout(timer); timer = null; } };
+      const start = (e) => {
+        if (e.type === 'mousedown' && e.button !== 0) return;
+        longFired = false;
+        clear();
+        timer = setTimeout(() => { longFired = true; onLong(e); }, 550);
+      };
+      const end = () => {
+        clear();
+        if (!longFired && onShort) onShort();
+      };
+      el.addEventListener('mousedown', start);
+      el.addEventListener('mouseup', end);
+      el.addEventListener('mouseleave', clear);
+      el.addEventListener('touchstart', start, { passive: true });
+      el.addEventListener('touchend', end);
+      el.addEventListener('touchcancel', clear);
+      el.addEventListener('contextmenu', (e) => e.preventDefault());
+    }
+
+    root.querySelectorAll('.group-name[data-gid]').forEach(btn => {
+      const gid = btn.dataset.gid;
+      attachLongPress(btn, () => groupStartRename(gid), () => toggleGroupSelection(gid));
+    });
+
     root.querySelectorAll('[data-action]').forEach(btn => {
       btn.addEventListener('click', (e) => {
         const action = btn.dataset.action;
@@ -4370,9 +4698,9 @@
           }
           return;
         }
-        // Feature-level actions
+        // Feature-level actions — Calques selection is always additive.
         const id = btn.dataset.id;
-        if (action === 'select') selectFeature(id, { additive: state.multiSelectMode });
+        if (action === 'select') toggleSelect(id);
         else if (action === 'zoom') zoomToFeature(id);
         else if (action === 'visibility') toggleVisibility(id);
         else if (action === 'delete') {
@@ -4452,16 +4780,79 @@
     } catch (e) {}
   }
 
+  function initDrawDefaultsUi() {
+    const wrap = document.getElementById('draw-defaults');
+    const toggle = document.getElementById('dd-toggle');
+    const groupSel = document.getElementById('dd-group');
+    const stroke = document.getElementById('dd-stroke');
+    const fill = document.getElementById('dd-fill');
+    const opacity = document.getElementById('dd-opacity');
+    if (!wrap || !toggle) return;
+
+    const refreshGroupOpts = () => {
+      if (!groupSel) return;
+      const cur = state.drawDefaults.groupId || '';
+      groupSel.innerHTML = `<option value="">Sans couche</option>` +
+        state.groups.map(g =>
+          `<option value="${g.id}" ${cur === g.id ? 'selected' : ''}>${escapeHtml(g.name)}</option>`
+        ).join('');
+    };
+
+    const syncFromState = () => {
+      refreshGroupOpts();
+      if (stroke) stroke.value = state.drawDefaults.style.stroke || '#3aa0ff';
+      if (fill) fill.value = state.drawDefaults.style.fill || '#3aa0ff';
+      if (opacity) opacity.value = String(state.drawDefaults.style.fillOpacity ?? 0.3);
+    };
+
+    toggle.addEventListener('click', (e) => {
+      e.stopPropagation();
+      wrap.classList.toggle('open');
+      toggle.classList.toggle('active', wrap.classList.contains('open'));
+      syncFromState();
+    });
+
+    groupSel?.addEventListener('change', () => {
+      state.drawDefaults.groupId = groupSel.value || null;
+      saveState();
+    });
+    stroke?.addEventListener('input', () => {
+      state.drawDefaults.style.stroke = stroke.value;
+      saveState();
+    });
+    fill?.addEventListener('input', () => {
+      state.drawDefaults.style.fill = fill.value;
+      saveState();
+    });
+    opacity?.addEventListener('input', () => {
+      state.drawDefaults.style.fillOpacity = parseFloat(opacity.value);
+      saveState();
+    });
+
+    document.addEventListener('click', (e) => {
+      if (!wrap.contains(e.target)) {
+        wrap.classList.remove('open');
+        toggle.classList.remove('active');
+      }
+    });
+
+    syncFromState();
+    onUi(() => { if (wrap.classList.contains('open')) refreshGroupOpts(); });
+  }
+
   /* ═══ 9. PANEL CONTENT — STYLE ══════════════════════════════════════════════ */
   function renderStyle() {
-    const sel = state.features.filter(f => state.selectedIds.includes(f.id));
+    const targets = describeStyleTargets();
+    const sel = state.features.filter(f => targets.featIds.includes(f.id));
     if (sel.length === 0) {
-      return `<div class="empty-state">Sélectionnez un ou plusieurs objets sur la carte (tap directement sur l'objet) pour modifier leur style.</div>`;
+      return `<div class="empty-state">Sélectionnez un ou plusieurs objets ou couches dans « Calques », ou sur la carte, pour modifier leur style.</div>`;
     }
     const ref = sel[0].style;
-    const header = sel.length === 1
-      ? `Modification de <strong style="color:var(--brand)">${escapeHtml(sel[0].name)}</strong>`
-      : `Modification de <strong style="color:var(--brand)">${sel.length} objets</strong> sélectionnés`;
+    const header = targets.label.includes('couche')
+      ? `Modification de <strong style="color:var(--brand)">${escapeHtml(targets.label)}</strong> (${sel.length} objet${sel.length > 1 ? 's' : ''})`
+      : sel.length === 1
+        ? `Modification de <strong style="color:var(--brand)">${escapeHtml(sel[0].name)}</strong>`
+        : `Modification de <strong style="color:var(--brand)">${sel.length} objets</strong> sélectionnés`;
     return `
       <div style="font-size:13px; color:var(--ink-1); margin-bottom:14px; padding:8px 10px; background:var(--bg-3); border-radius:6px;">${header}</div>
       <div class="stack">
@@ -4505,7 +4896,7 @@
 
   function attachStyleEvents(root) {
     const apply = (patch) => {
-      state.selectedIds.forEach(id => setStyle(id, patch));
+      applyStyleToTargets(patch);
     };
     root.querySelector('#st-stroke')?.addEventListener('input', e => {
       apply({ stroke: e.target.value });
